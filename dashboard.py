@@ -12,6 +12,7 @@ import sys
 
 DATA_DIR = Path(__file__).parent
 
+
 def load_data():
     """Carrega os CSVs gerados pelo main.py."""
     files = {
@@ -22,7 +23,7 @@ def load_data():
 
     for name, path in files.items():
         if not path.exists():
-            print(f"Arquivo não encontrado: {path}")
+            print(f"Arquivo nao encontrado: {path}")
             print("Execute primeiro: py main.py")
             sys.exit(1)
 
@@ -30,66 +31,38 @@ def load_data():
     pred = pd.read_csv(files["previsoes"], parse_dates=["order_date"])
     metrics = pd.read_csv(files["metricas"])
 
+    # Garantir coluna category
+    for df in [hist, pred, metrics]:
+        if "category" not in df.columns:
+            df["category"] = "Sem categoria"
+
     return hist, pred, metrics
 
 
 hist_df, pred_df, metrics_df = load_data()
 
 # ============================================================
-# PRÉ-PROCESSAR
+# PRE-PROCESSAR
 # ============================================================
 
-# Lista de produtos únicos (ordenar por total vendido)
+# Categorias unicas
+all_categories = sorted(hist_df["category"].dropna().unique().tolist())
+
+# Lista de produtos (ordenar por total vendido)
 product_sales = (
-    hist_df.groupby(["product_id", "product_name"])["quantity_sold"]
+    hist_df.groupby(["product_id", "product_name", "category"])["quantity_sold"]
     .sum().reset_index()
     .sort_values("quantity_sold", ascending=False)
 )
-product_options = [
-    {"label": f"{row['product_name']}  ({int(row['quantity_sold'])} vendidos)",
-     "value": str(row["product_id"])}
-    for _, row in product_sales.iterrows()
-]
 
 # KPIs gerais
 total_products = hist_df["product_id"].nunique()
 total_sales_qty = int(hist_df["quantity_sold"].sum())
 total_revenue = hist_df["revenue"].sum()
 total_orders_days = hist_df["order_date"].nunique()
-date_range_str = f"{hist_df['order_date'].min().strftime('%d/%m/%Y')} — {hist_df['order_date'].max().strftime('%d/%m/%Y')}"
-
-# Previsão totais
+date_min = hist_df["order_date"].min().strftime("%d/%m/%Y")
+date_max = hist_df["order_date"].max().strftime("%d/%m/%Y")
 pred_total_qty = pred_df["predicted_quantity"].sum()
-
-# Top 10 produtos
-top10 = product_sales.head(10)
-
-# Vendas diárias totais
-daily_total = hist_df.groupby("order_date").agg(
-    quantity=("quantity_sold", "sum"),
-    revenue=("revenue", "sum"),
-).reset_index()
-
-# Vendas semanais totais
-weekly_total = daily_total.copy()
-weekly_total["week"] = weekly_total["order_date"].dt.to_period("W").apply(lambda r: r.start_time)
-weekly_total = weekly_total.groupby("week").agg(
-    quantity=("quantity", "sum"),
-    revenue=("revenue", "sum"),
-).reset_index()
-
-# Métricas resumidas (agregar por product_id, pegar melhor nome)
-metrics_summary = (
-    metrics_df.groupby("product_id")
-    .agg(
-        product_name=("product_name", "first"),
-        mae=("mae", "mean"),
-        rmse=("rmse", "mean"),
-        r2_score=("r2_score", "max"),
-    )
-    .reset_index()
-    .sort_values("mae", ascending=True)
-)
 
 # ============================================================
 # ESTILO E CORES
@@ -117,9 +90,13 @@ PLOT_LAYOUT = dict(
     font=dict(family=FONT, color=COLORS["text"], size=12),
     margin=dict(l=40, r=20, t=40, b=40),
     xaxis=dict(gridcolor=COLORS["grid"], showline=False),
-    yaxis=dict(gridcolor=COLORS["grid"], showline=False),
+    yaxis=dict(gridcolor=COLORS["grid"], showline=False, rangemode="tozero"),
     legend=dict(bgcolor="rgba(0,0,0,0)"),
+    hovermode="x unified",
 )
+
+CATEGORY_COLORS = px.colors.qualitative.Plotly
+
 
 def card_style(extra=None):
     base = {
@@ -135,30 +112,38 @@ def card_style(extra=None):
 
 def kpi_card(title, value, subtitle="", color=COLORS["accent"]):
     return html.Div(
-        style=card_style({"textAlign": "center", "flex": "1", "minWidth": "180px"}),
+        style=card_style({"textAlign": "center", "flex": "1", "minWidth": "170px"}),
         children=[
             html.P(title, style={
-                "color": COLORS["text_muted"], "fontSize": "13px",
+                "color": COLORS["text_muted"], "fontSize": "12px",
                 "marginBottom": "4px", "textTransform": "uppercase",
                 "letterSpacing": "0.5px", "fontWeight": "500",
             }),
             html.H2(value, style={
                 "color": color, "margin": "8px 0 4px",
-                "fontSize": "28px", "fontWeight": "700",
+                "fontSize": "26px", "fontWeight": "700",
             }),
             html.P(subtitle, style={
-                "color": COLORS["text_muted"], "fontSize": "12px", "margin": "0",
+                "color": COLORS["text_muted"], "fontSize": "11px", "margin": "0",
             }) if subtitle else None,
         ],
     )
 
 
+dropdown_style = {
+    "backgroundColor": COLORS["bg"],
+    "color": COLORS["text"],
+    "border": f"1px solid {COLORS['card_border']}",
+    "borderRadius": "8px",
+}
+
+
 # ============================================================
-# APP DASH
+# LAYOUT
 # ============================================================
 
 app = Dash(__name__)
-app.title = "Dashboard de Previsão de Vendas"
+app.title = "Dashboard de Previsao de Vendas"
 
 app.layout = html.Div(
     style={
@@ -171,127 +156,143 @@ app.layout = html.Div(
         html.Div(
             style={
                 "background": "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
-                "padding": "32px 48px", "borderBottom": f"1px solid {COLORS['card_border']}",
+                "padding": "28px 48px", "borderBottom": f"1px solid {COLORS['card_border']}",
             },
             children=[
-                html.H1("Previsão de Vendas", style={
+                html.H1("Previsao de Vendas", style={
                     "margin": "0 0 4px", "fontSize": "28px", "fontWeight": "700",
                     "background": "linear-gradient(90deg, #58a6ff, #a855f7)",
                     "WebkitBackgroundClip": "text", "WebkitTextFillColor": "transparent",
                 }),
-                html.P(f"Dados de {date_range_str}", style={
+                html.P(f"Dados de {date_min} a {date_max}", style={
                     "color": COLORS["text_muted"], "margin": "0", "fontSize": "14px",
                 }),
             ],
         ),
 
-        # --- CONTEÚDO ---
-        html.Div(style={"padding": "32px 48px", "maxWidth": "1400px", "margin": "0 auto"}, children=[
+        # --- CONTEUDO ---
+        html.Div(style={"padding": "28px 48px", "maxWidth": "1440px", "margin": "0 auto"}, children=[
 
-            # KPI CARDS
+            # KPIs
             html.Div(
-                style={"display": "flex", "gap": "16px", "flexWrap": "wrap", "marginBottom": "32px"},
+                style={"display": "flex", "gap": "14px", "flexWrap": "wrap", "marginBottom": "28px"},
                 children=[
                     kpi_card("Produtos", str(total_products), color=COLORS["accent"]),
                     kpi_card("Vendas Totais", f"{total_sales_qty:,}".replace(",", "."), color=COLORS["accent3"]),
                     kpi_card("Receita Total", f"$ {total_revenue:,.2f}", color=COLORS["accent2"]),
-                    kpi_card("Previsão 30d", f"{pred_total_qty:,.0f} un.", "Quantidade prevista", color=COLORS["accent4"]),
-                    kpi_card("Dias com Dados", str(total_orders_days), color=COLORS["accent"]),
+                    kpi_card("Categorias", str(len(all_categories)), color=COLORS["accent4"]),
+                    kpi_card("Previsao 30d", f"{pred_total_qty:,.0f} un.", color=COLORS["accent4"]),
                 ],
             ),
 
-            # LINHA 1: Vendas ao longo do tempo + Top 10
-            html.Div(style={"display": "grid", "gridTemplateColumns": "2fr 1fr", "gap": "24px", "marginBottom": "32px"}, children=[
-
-                # Gráfico de vendas ao longo do tempo
-                html.Div(style=card_style(), children=[
-                    html.H3("Vendas ao Longo do Tempo", style={"margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600"}),
-                    dcc.RadioItems(
-                        id="time-granularity",
-                        options=[
-                            {"label": " Diário", "value": "daily"},
-                            {"label": " Semanal", "value": "weekly"},
-                        ],
-                        value="weekly",
-                        inline=True,
-                        style={"marginBottom": "12px", "fontSize": "13px"},
-                        inputStyle={"marginRight": "4px"},
-                        labelStyle={"marginRight": "20px", "cursor": "pointer"},
-                    ),
-                    dcc.Graph(id="sales-timeline", config={"displayModeBar": False}),
-                ]),
-
-                # Top 10 Produtos
-                html.Div(style=card_style(), children=[
-                    html.H3("Top 10 Produtos", style={"margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600"}),
-                    dcc.Graph(
-                        id="top10-chart",
-                        figure=px.bar(
-                            top10.iloc[::-1],
-                            x="quantity_sold", y="product_name",
-                            orientation="h",
-                            color="quantity_sold",
-                            color_continuous_scale=["#1e3a5f", "#58a6ff"],
-                        ).update_layout(
-                            **{k: v for k, v in PLOT_LAYOUT.items() if k != "margin"},
-                            showlegend=False, coloraxis_showscale=False,
-                            yaxis_title="", xaxis_title="Quantidade Vendida",
-                            margin=dict(l=10, r=20, t=10, b=40),
-                        ).update_traces(
-                            texttemplate="%{x:.0f}", textposition="outside",
-                            textfont_size=11,
+            # ============ FILTRO DE CATEGORIAS ============
+            html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                html.H3("Filtrar por Categoria", style={
+                    "margin": "0 0 12px", "fontSize": "16px", "fontWeight": "600",
+                }),
+                html.Div(style={"display": "flex", "gap": "16px", "alignItems": "center", "flexWrap": "wrap"}, children=[
+                    html.Div(style={"flex": "1", "minWidth": "300px"}, children=[
+                        html.Label("Categorias:", style={"fontSize": "13px", "color": COLORS["text_muted"], "marginBottom": "4px", "display": "block"}),
+                        dcc.Dropdown(
+                            id="category-filter",
+                            options=[{"label": c, "value": c} for c in all_categories],
+                            value=all_categories,
+                            multi=True,
+                            placeholder="Selecione categorias...",
+                            style=dropdown_style,
                         ),
-                        config={"displayModeBar": False},
-                    ),
+                    ]),
+                    html.Div(style={"minWidth": "180px"}, children=[
+                        html.Label("Granularidade:", style={"fontSize": "13px", "color": COLORS["text_muted"], "marginBottom": "4px", "display": "block"}),
+                        dcc.RadioItems(
+                            id="time-granularity",
+                            options=[
+                                {"label": " Diario", "value": "daily"},
+                                {"label": " Semanal", "value": "weekly"},
+                            ],
+                            value="daily",
+                            inline=True,
+                            style={"fontSize": "13px"},
+                            inputStyle={"marginRight": "4px"},
+                            labelStyle={"marginRight": "16px", "cursor": "pointer"},
+                        ),
+                    ]),
                 ]),
             ]),
 
-            # LINHA 2: Previsão por Produto
-            html.Div(style=card_style({"marginBottom": "32px"}), children=[
-                html.H3("Histórico + Previsão por Produto", style={"margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600"}),
-                html.Div(style={"display": "flex", "gap": "16px", "alignItems": "center", "marginBottom": "16px", "flexWrap": "wrap"}, children=[
-                    html.Label("Produto:", style={"fontSize": "13px", "color": COLORS["text_muted"]}),
+            # ============ VENDAS POR CATEGORIA AO LONGO DO TEMPO ============
+            html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                html.H3("Vendas por Categoria ao Longo do Tempo", style={
+                    "margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600",
+                }),
+                dcc.Graph(id="category-timeline", config={"displayModeBar": False}),
+            ]),
+
+            # ============ PREVISAO POR CATEGORIA (DIARIA) ============
+            html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                html.H3("Previsao Diaria por Categoria (Proximos 30 dias)", style={
+                    "margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600",
+                }),
+                dcc.Graph(id="category-forecast", config={"displayModeBar": False}),
+            ]),
+
+            # ============ GRID: TOP PRODUTOS + PRODUTO INDIVIDUAL ============
+            html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "24px", "marginBottom": "28px"}, children=[
+
+                # Top produtos nas categorias selecionadas
+                html.Div(style=card_style(), children=[
+                    html.H3("Top 15 Produtos (Categorias Selecionadas)", style={
+                        "margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600",
+                    }),
+                    dcc.Graph(id="top-products-chart", config={"displayModeBar": False}),
+                ]),
+
+                # Previsao individual por produto
+                html.Div(style=card_style(), children=[
+                    html.H3("Historico + Previsao por Produto", style={
+                        "margin": "0 0 12px", "fontSize": "16px", "fontWeight": "600",
+                    }),
                     dcc.Dropdown(
                         id="product-selector",
-                        options=product_options,
-                        value=str(product_sales.iloc[0]["product_id"]) if len(product_sales) > 0 else None,
-                        style={
-                            "width": "500px", "backgroundColor": COLORS["bg"],
-                            "color": COLORS["text"], "border": f"1px solid {COLORS['card_border']}",
-                            "borderRadius": "8px",
-                        },
-                        className="dash-dropdown",
+                        placeholder="Selecione um produto...",
+                        style={**dropdown_style, "marginBottom": "12px"},
                     ),
+                    dcc.Graph(id="product-forecast", config={"displayModeBar": False}),
                 ]),
-                dcc.Graph(id="product-forecast", config={"displayModeBar": False}),
             ]),
 
-            # LINHA 3: Grid de previsões top 6 + Tabela de métricas
-            html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "24px", "marginBottom": "32px"}, children=[
+            # ============ GRID: RECEITA + DIA DA SEMANA ============
+            html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "24px", "marginBottom": "28px"}, children=[
 
-                # Receita mensal
                 html.Div(style=card_style(), children=[
-                    html.H3("Receita Mensal", style={"margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600"}),
+                    html.H3("Receita Mensal (Categorias Selecionadas)", style={
+                        "margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600",
+                    }),
                     dcc.Graph(id="monthly-revenue", config={"displayModeBar": False}),
                 ]),
 
-                # Distribuição dia da semana
                 html.Div(style=card_style(), children=[
-                    html.H3("Vendas por Dia da Semana", style={"margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600"}),
+                    html.H3("Vendas por Dia da Semana", style={
+                        "margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600",
+                    }),
                     dcc.Graph(id="weekday-chart", config={"displayModeBar": False}),
                 ]),
             ]),
 
-            # LINHA 4: Tabela de métricas dos modelos
-            html.Div(style=card_style({"marginBottom": "32px"}), children=[
-                html.H3("Métricas dos Modelos de Previsão", style={"margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600"}),
-                html.P("Mostrando produtos com maior volume de previsão", style={"color": COLORS["text_muted"], "fontSize": "13px", "marginBottom": "16px"}),
-                html.Div(id="metrics-table", style={"overflowX": "auto"}),
+            # ============ TABELA DE METRICAS ============
+            html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                html.H3("Metricas dos Modelos de Previsao", style={
+                    "margin": "0 0 8px", "fontSize": "16px", "fontWeight": "600",
+                }),
+                html.P("Ordenado por previsao total (30 dias)", style={
+                    "color": COLORS["text_muted"], "fontSize": "13px", "marginBottom": "16px",
+                }),
+                html.Div(id="metrics-table", style={"overflowX": "auto", "maxHeight": "500px", "overflowY": "auto"}),
             ]),
 
             # FOOTER
-            html.Div(style={"textAlign": "center", "padding": "24px 0", "borderTop": f"1px solid {COLORS['card_border']}"}, children=[
-                html.P("Dashboard de Previsão de Vendas — Powered by Plotly Dash", style={
+            html.Div(style={"textAlign": "center", "padding": "20px 0", "borderTop": f"1px solid {COLORS['card_border']}"}, children=[
+                html.P("Dashboard de Previsao de Vendas - Powered by Plotly Dash", style={
                     "color": COLORS["text_muted"], "fontSize": "12px", "margin": "0",
                 }),
             ]),
@@ -304,208 +305,321 @@ app.layout = html.Div(
 # CALLBACKS
 # ============================================================
 
+# --- Atualizar dropdown de produtos baseado nas categorias ---
 @callback(
-    Output("sales-timeline", "figure"),
+    Output("product-selector", "options"),
+    Output("product-selector", "value"),
+    Input("category-filter", "value"),
+)
+def update_product_options(selected_cats):
+    if not selected_cats:
+        return [], None
+    filtered = product_sales[product_sales["category"].isin(selected_cats)]
+    options = [
+        {"label": f"{r['product_name']}  ({int(r['quantity_sold'])} vendidos)",
+         "value": str(r["product_id"])}
+        for _, r in filtered.iterrows()
+    ]
+    first_val = options[0]["value"] if options else None
+    return options, first_val
+
+
+# --- Vendas por categoria ao longo do tempo ---
+@callback(
+    Output("category-timeline", "figure"),
+    Input("category-filter", "value"),
     Input("time-granularity", "value"),
 )
-def update_timeline(granularity):
-    if granularity == "weekly":
-        df = weekly_total
-        x_col, label = "week", "Semana"
-    else:
-        df = daily_total
-        x_col, label = "order_date", "Data"
-
+def update_category_timeline(selected_cats, granularity):
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df[x_col], y=df["quantity"],
-        mode="lines", name="Quantidade",
-        line=dict(color=COLORS["accent"], width=2),
-        fill="tozeroy", fillcolor="rgba(88,166,255,0.08)",
-    ))
+    if not selected_cats:
+        fig.update_layout(**PLOT_LAYOUT)
+        return fig
+
+    filtered = hist_df[hist_df["category"].isin(selected_cats)]
+
+    for i, cat in enumerate(selected_cats):
+        cat_data = filtered[filtered["category"] == cat]
+        agg = cat_data.groupby("order_date")["quantity_sold"].sum().reset_index()
+
+        if granularity == "weekly":
+            agg["week"] = agg["order_date"].dt.to_period("W").apply(lambda r: r.start_time)
+            agg = agg.groupby("week")["quantity_sold"].sum().reset_index()
+            x_col = "week"
+        else:
+            x_col = "order_date"
+
+        color = CATEGORY_COLORS[i % len(CATEGORY_COLORS)]
+        fig.add_trace(go.Scatter(
+            x=agg[x_col], y=agg["quantity_sold"],
+            mode="lines", name=cat,
+            line=dict(color=color, width=2),
+        ))
+
+    fig.update_layout(**PLOT_LAYOUT)
     fig.update_layout(
-        **PLOT_LAYOUT,
-        xaxis_title=label, yaxis_title="Quantidade Vendida",
-        showlegend=False,
-        hovermode="x unified",
+        xaxis_title="Data", yaxis_title="Quantidade Vendida",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
     )
     return fig
 
 
+# --- Previsao diaria por categoria ---
+@callback(
+    Output("category-forecast", "figure"),
+    Input("category-filter", "value"),
+)
+def update_category_forecast(selected_cats):
+    fig = go.Figure()
+    if not selected_cats:
+        fig.update_layout(**PLOT_LAYOUT)
+        return fig
+
+    for i, cat in enumerate(selected_cats):
+        # Historico agregado por categoria
+        h = hist_df[hist_df["category"] == cat]
+        h_daily = h.groupby("order_date")["quantity_sold"].sum().reset_index()
+
+        # Previsao agregada por categoria
+        p = pred_df[pred_df["category"] == cat]
+        p_daily = p.groupby("order_date")["predicted_quantity"].sum().reset_index()
+
+        color = CATEGORY_COLORS[i % len(CATEGORY_COLORS)]
+
+        # Ultimos 60 dias do historico + previsao
+        if not h_daily.empty:
+            cutoff = h_daily["order_date"].max() - pd.Timedelta(days=60)
+            h_recent = h_daily[h_daily["order_date"] >= cutoff]
+            fig.add_trace(go.Scatter(
+                x=h_recent["order_date"], y=h_recent["quantity_sold"],
+                mode="lines", name=f"{cat} (historico)",
+                line=dict(color=color, width=2),
+                legendgroup=cat,
+            ))
+
+        if not p_daily.empty:
+            fig.add_trace(go.Scatter(
+                x=p_daily["order_date"], y=p_daily["predicted_quantity"],
+                mode="lines+markers", name=f"{cat} (previsao)",
+                line=dict(color=color, width=2.5, dash="dash"),
+                marker=dict(size=4),
+                legendgroup=cat,
+            ))
+
+    fig.update_layout(**PLOT_LAYOUT)
+    fig.update_layout(
+        xaxis_title="Data", yaxis_title="Quantidade",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+    )
+    return fig
+
+
+# --- Top produtos nas categorias selecionadas ---
+@callback(
+    Output("top-products-chart", "figure"),
+    Input("category-filter", "value"),
+)
+def update_top_products(selected_cats):
+    fig = go.Figure()
+    if not selected_cats:
+        fig.update_layout(**PLOT_LAYOUT)
+        return fig
+
+    filtered = product_sales[product_sales["category"].isin(selected_cats)].head(15).iloc[::-1]
+
+    fig.add_trace(go.Bar(
+        x=filtered["quantity_sold"], y=filtered["product_name"],
+        orientation="h",
+        marker_color=COLORS["accent"],
+        texttemplate="%{x:.0f}", textposition="outside", textfont_size=11,
+    ))
+
+    fig.update_layout(
+        **{k: v for k, v in PLOT_LAYOUT.items() if k != "margin"},
+        margin=dict(l=10, r=40, t=10, b=30),
+        showlegend=False,
+        yaxis_title="", xaxis_title="Quantidade Vendida",
+    )
+    return fig
+
+
+# --- Previsao individual por produto ---
 @callback(
     Output("product-forecast", "figure"),
     Input("product-selector", "value"),
 )
 def update_product_forecast(product_id):
+    fig = go.Figure()
     if product_id is None:
-        return go.Figure().update_layout(**PLOT_LAYOUT)
+        fig.update_layout(**PLOT_LAYOUT)
+        return fig
 
     pid = int(product_id)
 
-    # Histórico
     h = hist_df[hist_df["product_id"] == pid].sort_values("order_date")
-    # Previsão
     p = pred_df[pred_df["product_id"] == pid].sort_values("order_date")
 
-    fig = go.Figure()
-
     if not h.empty:
-        # Média móvel 7 dias
         h_agg = h.groupby("order_date")["quantity_sold"].sum().reset_index()
         h_agg["rolling_7d"] = h_agg["quantity_sold"].rolling(7, min_periods=1).mean()
 
         fig.add_trace(go.Scatter(
             x=h_agg["order_date"], y=h_agg["quantity_sold"],
-            mode="lines", name="Vendas Diárias",
-            line=dict(color=COLORS["accent"], width=1.2),
-            opacity=0.4,
+            mode="lines", name="Vendas Diarias",
+            line=dict(color=COLORS["accent"], width=1), opacity=0.4,
         ))
         fig.add_trace(go.Scatter(
             x=h_agg["order_date"], y=h_agg["rolling_7d"],
-            mode="lines", name="Média Móvel 7d",
+            mode="lines", name="Media Movel 7d",
             line=dict(color=COLORS["accent"], width=2.5),
         ))
 
-        # Linha vertical separando histórico de previsão
+        # Linha vertical separando historico de previsao
         last_date = h_agg["order_date"].max()
+        y_max = max(h_agg["quantity_sold"].max(), 1)
         fig.add_trace(go.Scatter(
-            x=[last_date, last_date],
-            y=[0, max(h_agg["quantity_sold"].max(), 1)],
-            mode="lines", name="Início Previsão",
+            x=[last_date, last_date], y=[0, y_max],
+            mode="lines", name="Inicio Previsao",
             line=dict(color=COLORS["text_muted"], width=1.5, dash="dot"),
-            showlegend=True,
         ))
 
     if not p.empty:
         fig.add_trace(go.Scatter(
             x=p["order_date"], y=p["predicted_quantity"],
-            mode="lines+markers", name="Previsão",
+            mode="lines+markers", name="Previsao",
             line=dict(color=COLORS["accent2"], width=2.5, dash="dash"),
             marker=dict(size=4),
-            fill="tozeroy", fillcolor="rgba(249,115,22,0.06)",
         ))
 
-    product_name = h["product_name"].iloc[0] if not h.empty else (p["product_name"].iloc[0] if not p.empty else "")
-
+    fig.update_layout(**PLOT_LAYOUT)
     fig.update_layout(
-        **PLOT_LAYOUT,
-        xaxis_title="Data",
-        yaxis_title="Quantidade",
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis_title="Data", yaxis_title="Quantidade",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
     )
     return fig
 
 
+# --- Receita mensal ---
 @callback(
     Output("monthly-revenue", "figure"),
-    Input("time-granularity", "value"),  # dummy trigger
+    Input("category-filter", "value"),
 )
-def update_monthly_revenue(_):
-    monthly = hist_df.copy()
-    monthly["month"] = monthly["order_date"].dt.to_period("M").apply(lambda r: r.start_time)
-    monthly = monthly.groupby("month")["revenue"].sum().reset_index()
-
+def update_monthly_revenue(selected_cats):
     fig = go.Figure()
+    if not selected_cats:
+        fig.update_layout(**PLOT_LAYOUT)
+        return fig
+
+    filtered = hist_df[hist_df["category"].isin(selected_cats)].copy()
+    filtered["month"] = filtered["order_date"].dt.to_period("M").apply(lambda r: r.start_time)
+    monthly = filtered.groupby("month")["revenue"].sum().reset_index()
+
     fig.add_trace(go.Bar(
         x=monthly["month"], y=monthly["revenue"],
-        marker_color=COLORS["accent3"],
-        marker_line_width=0,
-        opacity=0.85,
+        marker_color=COLORS["accent3"], marker_line_width=0, opacity=0.85,
     ))
-    fig.update_layout(
-        **PLOT_LAYOUT,
-        xaxis_title="Mês", yaxis_title="Receita ($)",
-        showlegend=False,
-    )
+    fig.update_layout(**PLOT_LAYOUT, xaxis_title="Mes", yaxis_title="Receita ($)", showlegend=False)
     return fig
 
 
+# --- Vendas por dia da semana ---
 @callback(
     Output("weekday-chart", "figure"),
-    Input("time-granularity", "value"),  # dummy trigger
+    Input("category-filter", "value"),
 )
-def update_weekday_chart(_):
-    weekday_names = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
-    wd = hist_df.copy()
-    wd["weekday"] = wd["order_date"].dt.dayofweek
-    wd_agg = wd.groupby("weekday")["quantity_sold"].sum().reset_index()
-    wd_agg["weekday_name"] = wd_agg["weekday"].map(lambda x: weekday_names[x])
-
-    colors = [COLORS["accent4"] if x >= 5 else COLORS["accent"] for x in wd_agg["weekday"]]
-
+def update_weekday_chart(selected_cats):
     fig = go.Figure()
+    if not selected_cats:
+        fig.update_layout(**PLOT_LAYOUT)
+        return fig
+
+    weekday_names = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"]
+    filtered = hist_df[hist_df["category"].isin(selected_cats)].copy()
+    filtered["weekday"] = filtered["order_date"].dt.dayofweek
+    wd = filtered.groupby("weekday")["quantity_sold"].sum().reset_index()
+    wd["weekday_name"] = wd["weekday"].map(lambda x: weekday_names[x])
+
+    colors = [COLORS["accent4"] if x >= 5 else COLORS["accent"] for x in wd["weekday"]]
+
     fig.add_trace(go.Bar(
-        x=wd_agg["weekday_name"], y=wd_agg["quantity_sold"],
-        marker_color=colors,
-        marker_line_width=0,
+        x=wd["weekday_name"], y=wd["quantity_sold"],
+        marker_color=colors, marker_line_width=0,
     ))
-    fig.update_layout(
-        **PLOT_LAYOUT,
-        xaxis_title="", yaxis_title="Quantidade",
-        showlegend=False,
-    )
+    fig.update_layout(**PLOT_LAYOUT, xaxis_title="", yaxis_title="Quantidade", showlegend=False)
     return fig
 
 
+# --- Tabela de metricas ---
 @callback(
     Output("metrics-table", "children"),
-    Input("time-granularity", "value"),  # dummy trigger
+    Input("category-filter", "value"),
 )
-def update_metrics_table(_):
-    # Juntar com previsão total por produto
-    pred_summary = (
-        pred_df.groupby("product_id")
-        .agg(total_previsto=("predicted_quantity", "sum"), media_diaria=("predicted_quantity", "mean"))
+def update_metrics_table(selected_cats):
+    if not selected_cats:
+        return html.P("Selecione ao menos uma categoria.", style={"color": COLORS["text_muted"]})
+
+    filtered_metrics = metrics_df[metrics_df["category"].isin(selected_cats)]
+
+    # Resumo de metricas
+    ms = (
+        filtered_metrics.groupby(["product_id", "category"])
+        .agg(product_name=("product_name", "first"), mae=("mae", "mean"), rmse=("rmse", "mean"), r2_score=("r2_score", "max"))
         .reset_index()
     )
 
-    table_df = metrics_summary.merge(pred_summary, on="product_id", how="left").fillna(0)
-    table_df = table_df.sort_values("total_previsto", ascending=False).head(30)
+    # Juntar com previsao total
+    pred_summary = (
+        pred_df[pred_df["category"].isin(selected_cats)]
+        .groupby("product_id")
+        .agg(total_prev=("predicted_quantity", "sum"), media_dia=("predicted_quantity", "mean"))
+        .reset_index()
+    )
+
+    table_df = ms.merge(pred_summary, on="product_id", how="left").fillna(0)
+    table_df = table_df.sort_values("total_prev", ascending=False).head(40)
 
     header_style = {
-        "padding": "12px 16px", "textAlign": "left", "fontSize": "12px",
+        "padding": "10px 14px", "textAlign": "left", "fontSize": "11px",
         "color": COLORS["text_muted"], "textTransform": "uppercase",
         "letterSpacing": "0.5px", "fontWeight": "600",
         "borderBottom": f"2px solid {COLORS['card_border']}",
         "position": "sticky", "top": "0", "backgroundColor": COLORS["card"],
     }
     cell_style = {
-        "padding": "10px 16px", "fontSize": "13px",
+        "padding": "8px 14px", "fontSize": "13px",
         "borderBottom": f"1px solid {COLORS['card_border']}",
     }
 
     def r2_color(val):
         if val >= 0.5:
             return COLORS["accent3"]
-        elif val >= 0:
+        if val >= 0:
             return COLORS["accent"]
         return COLORS["red"]
 
     header = html.Tr([
         html.Th("Produto", style=header_style),
+        html.Th("Categoria", style=header_style),
         html.Th("MAE", style={**header_style, "textAlign": "right"}),
         html.Th("RMSE", style={**header_style, "textAlign": "right"}),
-        html.Th("R²", style={**header_style, "textAlign": "right"}),
-        html.Th("Prev. 30d (total)", style={**header_style, "textAlign": "right"}),
-        html.Th("Prev. Média/Dia", style={**header_style, "textAlign": "right"}),
+        html.Th("R2", style={**header_style, "textAlign": "right"}),
+        html.Th("Prev. 30d", style={**header_style, "textAlign": "right"}),
+        html.Th("Media/Dia", style={**header_style, "textAlign": "right"}),
     ])
 
     rows = []
     for _, row in table_df.iterrows():
         name = row["product_name"]
-        if len(name) > 55:
-            name = name[:52] + "..."
+        if len(name) > 50:
+            name = name[:47] + "..."
         rows.append(html.Tr([
             html.Td(name, style=cell_style),
+            html.Td(row["category"], style={**cell_style, "color": COLORS["accent4"]}),
             html.Td(f"{row['mae']:.2f}", style={**cell_style, "textAlign": "right"}),
             html.Td(f"{row['rmse']:.2f}", style={**cell_style, "textAlign": "right"}),
-            html.Td(
-                f"{row['r2_score']:.3f}",
-                style={**cell_style, "textAlign": "right", "color": r2_color(row["r2_score"]), "fontWeight": "600"},
-            ),
-            html.Td(f"{row['total_previsto']:.1f}", style={**cell_style, "textAlign": "right", "color": COLORS["accent2"], "fontWeight": "600"}),
-            html.Td(f"{row['media_diaria']:.2f}", style={**cell_style, "textAlign": "right"}),
+            html.Td(f"{row['r2_score']:.3f}", style={**cell_style, "textAlign": "right", "color": r2_color(row["r2_score"]), "fontWeight": "600"}),
+            html.Td(f"{row['total_prev']:.1f}", style={**cell_style, "textAlign": "right", "color": COLORS["accent2"], "fontWeight": "600"}),
+            html.Td(f"{row['media_dia']:.2f}", style={**cell_style, "textAlign": "right"}),
         ]))
 
     return html.Table(
@@ -519,5 +633,5 @@ def update_metrics_table(_):
 # ============================================================
 
 if __name__ == "__main__":
-    print("\n  Dashboard disponível em: http://localhost:8050\n")
+    print("\n  Dashboard disponivel em: http://localhost:8050\n")
     app.run(debug=True, port=8050)

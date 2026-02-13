@@ -1,5 +1,7 @@
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 import requests
@@ -101,9 +103,15 @@ def fetch_orders() -> pd.DataFrame:
 def build_sales_dataframe(orders_df: pd.DataFrame, products_df: pd.DataFrame) -> pd.DataFrame:
     """
     Processa os pedidos e constrói um DataFrame de vendas por produto por dia.
-    Cada linha = (data, produto, quantidade vendida, receita).
+    Cada linha = (data, produto, categoria, quantidade vendida, receita).
     """
     print("\n[*] Processando dados de vendas...")
+
+    # Mapa product_id -> categoria
+    cat_map = {}
+    if not products_df.empty and "id" in products_df.columns and "category" in products_df.columns:
+        cat_map = dict(zip(products_df["id"], products_df["category"]))
+
     rows = []
 
     for _, order in orders_df.iterrows():
@@ -116,10 +124,12 @@ def build_sales_dataframe(orders_df: pd.DataFrame, products_df: pd.DataFrame) ->
             continue
 
         for item in line_items:
+            pid = item.get("product_id")
             rows.append({
                 "order_date": order_date.date(),
-                "product_id": item.get("product_id"),
+                "product_id": pid,
                 "product_name": item.get("name", "Desconhecido"),
+                "category": cat_map.get(pid, "Sem categoria"),
                 "quantity": item.get("quantity", 0),
                 "total": float(item.get("total", 0)),
             })
@@ -135,13 +145,14 @@ def build_sales_dataframe(orders_df: pd.DataFrame, products_df: pd.DataFrame) ->
     # Agregar vendas por produto por dia
     daily_sales = (
         sales_df
-        .groupby(["order_date", "product_id", "product_name"])
+        .groupby(["order_date", "product_id", "product_name", "category"])
         .agg(quantity_sold=("quantity", "sum"), revenue=("total", "sum"))
         .reset_index()
     )
 
-    print(f"  {len(daily_sales)} registros de vendas diárias processados.")
-    print(f"  Produtos únicos com vendas: {daily_sales['product_id'].nunique()}")
+    print(f"  {len(daily_sales)} registros de vendas diarias processados.")
+    print(f"  Produtos unicos com vendas: {daily_sales['product_id'].nunique()}")
+    print(f"  Categorias encontradas: {daily_sales['category'].nunique()}")
     return daily_sales
 
 
@@ -168,10 +179,12 @@ def fill_missing_dates(df: pd.DataFrame) -> pd.DataFrame:
     date_range = pd.date_range(df["order_date"].min(), df["order_date"].max())
 
     for (pid, pname), group in df.groupby(["product_id", "product_name"]):
+        cat = group["category"].iloc[0] if "category" in group.columns else "Sem categoria"
         idx = pd.DataFrame({"order_date": date_range})
         merged = idx.merge(group, on="order_date", how="left")
         merged["product_id"] = pid
         merged["product_name"] = pname
+        merged["category"] = cat
         merged["quantity_sold"] = merged["quantity_sold"].fillna(0)
         merged["revenue"] = merged["revenue"].fillna(0)
         all_frames.append(merged)
@@ -204,6 +217,7 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30) -> pd.
 
     for (pid, pname), product_data in products:
         product_data = product_data.sort_values("order_date")
+        cat = product_data["category"].iloc[0] if "category" in product_data.columns else "Sem categoria"
 
         # Precisa de pelo menos 10 registros para treinar
         if len(product_data) < 10:
@@ -213,7 +227,7 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30) -> pd.
         X = product_data[feature_cols]
         y = product_data["quantity_sold"]
 
-        # Separar treino/teste (80/20, sem embaralhar pois é série temporal)
+        # Separar treino/teste (80/20, sem embaralhar pois é serie temporal)
         split_idx = int(len(X) * 0.8)
         X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
         y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
@@ -236,6 +250,7 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30) -> pd.
         model_metrics.append({
             "product_id": pid,
             "product_name": pname,
+            "category": cat,
             "mae": round(mae, 2),
             "rmse": round(rmse, 2),
             "r2_score": round(r2, 3),
@@ -245,7 +260,7 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30) -> pd.
 
         print(f"  [OK] {pname}: MAE={mae:.2f} | RMSE={rmse:.2f} | R2={r2:.3f}")
 
-        # Gerar previsão futura
+        # Gerar previsao futura
         last_date = product_data["order_date"].max()
         max_days_since_start = product_data["days_since_start"].max()
 
@@ -259,11 +274,12 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30) -> pd.
         future_df["days_since_start"] = max_days_since_start + np.arange(1, forecast_days + 1)
 
         future_pred = model.predict(future_df[feature_cols])
-        future_pred = np.maximum(future_pred, 0)  # Não permitir valores negativos
+        future_pred = np.maximum(future_pred, 0)
 
         future_df["predicted_quantity"] = np.round(future_pred, 1)
         future_df["product_id"] = pid
         future_df["product_name"] = pname
+        future_df["category"] = cat
         results.append(future_df)
 
     metrics_df = pd.DataFrame(model_metrics)
@@ -304,7 +320,7 @@ def plot_sales_overview(daily_sales: pd.DataFrame):
 
     plt.tight_layout()
     plt.savefig("vendas_overview.png", dpi=150, bbox_inches="tight")
-    plt.show()
+    plt.close()
     print("  [OK] Grafico salvo: vendas_overview.png")
 
 
@@ -360,7 +376,7 @@ def plot_predictions(daily_sales: pd.DataFrame, predictions_df: pd.DataFrame, to
     plt.suptitle("Previsão de Vendas por Produto", fontsize=16, fontweight="bold", y=1.02)
     plt.tight_layout()
     plt.savefig("previsao_vendas.png", dpi=150, bbox_inches="tight")
-    plt.show()
+    plt.close()
     print("  [OK] Grafico salvo: previsao_vendas.png")
 
 
