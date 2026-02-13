@@ -36,6 +36,10 @@ def load_data():
         if "category" not in df.columns:
             df["category"] = "Sem categoria"
 
+    # Garantir que product_id nao tem duplicatas de nome nas metricas
+    if not metrics.empty and "product_id" in metrics.columns:
+        metrics = metrics.drop_duplicates(subset=["product_id"], keep="first")
+
     return hist, pred, metrics
 
 
@@ -95,10 +99,15 @@ all_categories = sorted(set(
     for cat in parse_categories(cats_str)
 ))
 
-# Lista de produtos (ordenar por total vendido)
+# Lista de produtos (ordenar por total vendido, agrupar por product_id para evitar duplicatas)
 product_sales = (
-    hist_df.groupby(["product_id", "product_name", "category"])["quantity_sold"]
-    .sum().reset_index()
+    hist_df.groupby("product_id")
+    .agg(
+        product_name=("product_name", "first"),
+        category=("category", "first"),
+        quantity_sold=("quantity_sold", "sum"),
+    )
+    .reset_index()
     .sort_values("quantity_sold", ascending=False)
 )
 
@@ -625,10 +634,20 @@ def update_metrics_table(selected_cats):
     if filtered_metrics.empty:
         return html.P("Nenhum produto encontrado nas categorias selecionadas.", style={"color": COLORS["text_muted"]})
 
-    # Resumo de metricas
+    # Resumo de metricas (agrupar por product_id para evitar duplicatas)
+    agg_dict = {
+        "product_name": ("product_name", "first"),
+        "category": ("category", "first"),
+        "mae": ("mae", "mean"),
+        "rmse": ("rmse", "mean"),
+        "r2_score": ("r2_score", "max"),
+    }
+    if "method" in filtered_metrics.columns:
+        agg_dict["method"] = ("method", "first")
+
     ms = (
-        filtered_metrics.groupby(["product_id", "category"])
-        .agg(product_name=("product_name", "first"), mae=("mae", "mean"), rmse=("rmse", "mean"), r2_score=("r2_score", "max"))
+        filtered_metrics.groupby("product_id")
+        .agg(**agg_dict)
         .reset_index()
     )
 
@@ -643,6 +662,8 @@ def update_metrics_table(selected_cats):
 
     table_df = ms.merge(pred_summary, on="product_id", how="left").fillna(0)
     table_df = table_df.sort_values("total_prev", ascending=False).head(40)
+
+    has_method = "method" in table_df.columns
 
     header_style = {
         "padding": "10px 14px", "textAlign": "left", "fontSize": "11px",
@@ -663,7 +684,11 @@ def update_metrics_table(selected_cats):
             return COLORS["accent"]
         return COLORS["red"]
 
-    header = html.Tr([
+    def method_label(val):
+        labels = {"gradient_boosting": "ML", "weighted_average": "Media"}
+        return labels.get(str(val), str(val)[:10])
+
+    header_cells = [
         html.Th("Produto", style=header_style),
         html.Th("Categorias", style=header_style),
         html.Th("MAE", style={**header_style, "textAlign": "right"}),
@@ -671,7 +696,10 @@ def update_metrics_table(selected_cats):
         html.Th("R2", style={**header_style, "textAlign": "right"}),
         html.Th("Prev. 30d", style={**header_style, "textAlign": "right"}),
         html.Th("Media/Dia", style={**header_style, "textAlign": "right"}),
-    ])
+    ]
+    if has_method:
+        header_cells.append(html.Th("Metodo", style={**header_style, "textAlign": "center"}))
+    header = html.Tr(header_cells)
 
     rows = []
     for _, row in table_df.iterrows():
@@ -682,7 +710,8 @@ def update_metrics_table(selected_cats):
         cat_display = str(row["category"]).replace("|", ", ")
         if len(cat_display) > 40:
             cat_display = cat_display[:37] + "..."
-        rows.append(html.Tr([
+
+        row_cells = [
             html.Td(name, style=cell_style),
             html.Td(cat_display, style={**cell_style, "color": COLORS["accent4"], "fontSize": "12px"}),
             html.Td(f"{row['mae']:.2f}", style={**cell_style, "textAlign": "right"}),
@@ -690,7 +719,13 @@ def update_metrics_table(selected_cats):
             html.Td(f"{row['r2_score']:.3f}", style={**cell_style, "textAlign": "right", "color": r2_color(row["r2_score"]), "fontWeight": "600"}),
             html.Td(f"{row['total_prev']:.1f}", style={**cell_style, "textAlign": "right", "color": COLORS["accent2"], "fontWeight": "600"}),
             html.Td(f"{row['media_dia']:.2f}", style={**cell_style, "textAlign": "right"}),
-        ]))
+        ]
+        if has_method:
+            m = method_label(row.get("method", ""))
+            m_color = COLORS["accent3"] if m == "ML" else COLORS["accent"]
+            row_cells.append(html.Td(m, style={**cell_style, "textAlign": "center", "color": m_color, "fontWeight": "600", "fontSize": "11px"}))
+
+        rows.append(html.Tr(row_cells))
 
     return html.Table(
         [html.Thead(header), html.Tbody(rows)],

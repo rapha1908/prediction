@@ -6,10 +6,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import requests
 from datetime import datetime, timedelta
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.preprocessing import LabelEncoder
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -26,6 +24,11 @@ AUTH_PARAMS = {
     "consumer_key": CONSUMER_KEY,
     "consumer_secret": CONSUMER_SECRET,
 }
+
+# Semanas minimas para usar ML (senao usa media ponderada)
+MIN_WEEKS_ML = 8
+# Apenas prever para produtos com vendas nas ultimas N semanas
+ACTIVE_WINDOW_WEEKS = 12
 
 
 # ============================================================
@@ -50,7 +53,7 @@ def fetch_all_pages(endpoint: str, extra_params: dict | None = None) -> list:
             break
 
         all_data.extend(data)
-        print(f"  -> Página {page}: {len(data)} registros obtidos")
+        print(f"  -> Pagina {page}: {len(data)} registros obtidos")
         page += 1
 
     return all_data
@@ -85,16 +88,22 @@ def fetch_products() -> pd.DataFrame:
 
 
 def fetch_orders() -> pd.DataFrame:
-    """Busca todos os pedidos da loja."""
+    """Busca pedidos completed e processing da loja (ignora cancelados/reembolsados)."""
     print("\n[*] Buscando pedidos...")
-    orders = fetch_all_pages("orders", extra_params={"status": "any"})
-    df = pd.DataFrame(orders)
+    all_orders = []
+
+    for status in ["completed", "processing"]:
+        print(f"  Buscando pedidos com status '{status}'...")
+        orders = fetch_all_pages("orders", extra_params={"status": status})
+        all_orders.extend(orders)
+
+    df = pd.DataFrame(all_orders)
 
     if df.empty:
         print("  Nenhum pedido encontrado.")
         return df
 
-    print(f"  Total: {len(df)} pedidos encontrados.")
+    print(f"  Total: {len(df)} pedidos (completed + processing).")
     return df
 
 
@@ -104,15 +113,19 @@ def fetch_orders() -> pd.DataFrame:
 
 def build_sales_dataframe(orders_df: pd.DataFrame, products_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Processa os pedidos e constrói um DataFrame de vendas por produto por dia.
-    Cada linha = (data, produto, categoria, quantidade vendida, receita).
+    Processa os pedidos e constroi um DataFrame de vendas por produto por dia.
+    Consolida nomes usando o catalogo de produtos (evita duplicatas por renomeacao).
     """
     print("\n[*] Processando dados de vendas...")
 
-    # Mapa product_id -> categoria
+    # Mapa product_id -> categoria e nome (do catalogo de produtos)
     cat_map = {}
-    if not products_df.empty and "id" in products_df.columns and "category" in products_df.columns:
-        cat_map = dict(zip(products_df["id"], products_df["category"]))
+    name_map = {}
+    if not products_df.empty:
+        if "id" in products_df.columns and "category" in products_df.columns:
+            cat_map = dict(zip(products_df["id"], products_df["category"]))
+        if "id" in products_df.columns and "name" in products_df.columns:
+            name_map = dict(zip(products_df["id"], products_df["name"]))
 
     rows = []
 
@@ -127,13 +140,23 @@ def build_sales_dataframe(orders_df: pd.DataFrame, products_df: pd.DataFrame) ->
 
         for item in line_items:
             pid = item.get("product_id")
+            qty = item.get("quantity", 0)
+            total = float(item.get("total", 0))
+
+            # Ignorar itens sem quantidade
+            if qty <= 0:
+                continue
+
+            # Usar nome do catalogo (mais atual) quando disponivel
+            pname = name_map.get(pid, item.get("name", "Desconhecido"))
+
             rows.append({
                 "order_date": order_date.date(),
                 "product_id": pid,
-                "product_name": item.get("name", "Desconhecido"),
+                "product_name": pname,
                 "category": cat_map.get(pid, "Sem categoria"),
-                "quantity": item.get("quantity", 0),
-                "total": float(item.get("total", 0)),
+                "quantity": qty,
+                "total": total,
             })
 
     sales_df = pd.DataFrame(rows)
@@ -144,11 +167,16 @@ def build_sales_dataframe(orders_df: pd.DataFrame, products_df: pd.DataFrame) ->
 
     sales_df["order_date"] = pd.to_datetime(sales_df["order_date"])
 
-    # Agregar vendas por produto por dia
+    # Agregar vendas por produto por dia (chave = product_id, nao product_name)
     daily_sales = (
         sales_df
-        .groupby(["order_date", "product_id", "product_name", "category"])
-        .agg(quantity_sold=("quantity", "sum"), revenue=("total", "sum"))
+        .groupby(["order_date", "product_id"])
+        .agg(
+            product_name=("product_name", "first"),
+            category=("category", "first"),
+            quantity_sold=("quantity", "sum"),
+            revenue=("total", "sum"),
+        )
         .reset_index()
     )
 
@@ -158,131 +186,333 @@ def build_sales_dataframe(orders_df: pd.DataFrame, products_df: pd.DataFrame) ->
     return daily_sales
 
 
-def create_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Cria features temporais para o modelo de previsão.
-    """
-    df = df.copy()
-    df["day_of_week"] = df["order_date"].dt.dayofweek
-    df["day_of_month"] = df["order_date"].dt.day
-    df["month"] = df["order_date"].dt.month
-    df["week_of_year"] = df["order_date"].dt.isocalendar().week.astype(int)
-    df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
-    df["days_since_start"] = (df["order_date"] - df["order_date"].min()).dt.days
-    return df
+# ============================================================
+# 4. AGREGACAO SEMANAL E FEATURES
+# ============================================================
 
+def create_weekly_data(daily_sales: pd.DataFrame) -> pd.DataFrame:
+    """
+    Converte vendas diarias em semanais.
+    Preenche semanas faltantes APENAS dentro do periodo ativo de cada produto
+    (da primeira venda ate a semana atual).
+    """
+    df = daily_sales.copy()
+    df["week_start"] = df["order_date"].dt.to_period("W").apply(lambda r: r.start_time)
 
-def fill_missing_dates(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Preenche datas sem vendas com 0, para cada produto ter
-    uma série temporal contínua.
-    """
+    # Agregar por semana e produto
+    weekly = (
+        df.groupby(["week_start", "product_id"])
+        .agg(
+            product_name=("product_name", "first"),
+            category=("category", "first"),
+            quantity_sold=("quantity_sold", "sum"),
+            revenue=("revenue", "sum"),
+            days_with_sales=("order_date", "nunique"),
+        )
+        .reset_index()
+    )
+
+    # Preencher semanas faltantes por produto (apenas no periodo ativo)
+    today_monday = pd.Timestamp.now().normalize()
+    today_monday = today_monday - pd.Timedelta(days=today_monday.weekday())
+
     all_frames = []
-    date_range = pd.date_range(df["order_date"].min(), df["order_date"].max())
+    for pid, group in weekly.groupby("product_id"):
+        pname = group["product_name"].iloc[-1]
+        cat = group["category"].iloc[-1]
 
-    for (pid, pname), group in df.groupby(["product_id", "product_name"]):
-        cat = group["category"].iloc[0] if "category" in group.columns else "Sem categoria"
-        idx = pd.DataFrame({"order_date": date_range})
-        merged = idx.merge(group, on="order_date", how="left")
+        first_week = group["week_start"].min()
+        week_range = pd.date_range(first_week, today_monday, freq="W-MON")
+
+        idx = pd.DataFrame({"week_start": week_range})
+        merged = idx.merge(group, on="week_start", how="left")
         merged["product_id"] = pid
         merged["product_name"] = pname
         merged["category"] = cat
         merged["quantity_sold"] = merged["quantity_sold"].fillna(0)
         merged["revenue"] = merged["revenue"].fillna(0)
+        merged["days_with_sales"] = merged["days_with_sales"].fillna(0)
         all_frames.append(merged)
 
-    return pd.concat(all_frames, ignore_index=True)
+    result = pd.concat(all_frames, ignore_index=True)
+    print(f"  {len(result)} registros semanais para {result['product_id'].nunique()} produtos.")
+    return result
+
+
+def create_weekly_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Cria features temporais e de lag para dados semanais.
+    Inclui: sazonalidade, lags 1-4 semanas, rolling mean/std/max, velocidade.
+    """
+    df = df.copy().sort_values(["product_id", "week_start"])
+
+    # Features temporais
+    df["month"] = df["week_start"].dt.month
+    df["week_of_year"] = df["week_start"].dt.isocalendar().week.astype(int)
+    df["quarter"] = df["week_start"].dt.quarter
+
+    # Lags por produto (vendas das semanas anteriores)
+    for lag in [1, 2, 3, 4]:
+        df[f"lag_{lag}w"] = df.groupby("product_id")["quantity_sold"].shift(lag)
+
+    # Rolling statistics (janela de 4 semanas, shift para evitar data leakage)
+    g = df.groupby("product_id")["quantity_sold"]
+    df["rolling_mean_4w"] = g.transform(
+        lambda x: x.shift(1).rolling(4, min_periods=1).mean()
+    )
+    df["rolling_std_4w"] = g.transform(
+        lambda x: x.shift(1).rolling(4, min_periods=1).std().fillna(0)
+    )
+    df["rolling_max_4w"] = g.transform(
+        lambda x: x.shift(1).rolling(4, min_periods=1).max()
+    )
+    df["rolling_mean_8w"] = g.transform(
+        lambda x: x.shift(1).rolling(8, min_periods=1).mean()
+    )
+
+    # Vendas acumuladas
+    df["cumulative_sales"] = df.groupby("product_id")["quantity_sold"].cumsum()
+
+    # Semanas desde inicio das vendas do produto
+    df["weeks_active"] = df.groupby("product_id").cumcount()
+
+    # Velocidade (variacao entre semanas)
+    df["sales_velocity"] = df.groupby("product_id")["quantity_sold"].diff().shift(1)
+
+    # Preencher NaN com 0
+    fill_cols = [c for c in df.columns if "lag_" in c or "rolling_" in c or c == "sales_velocity"]
+    df[fill_cols] = df[fill_cols].fillna(0)
+
+    return df
+
+
+# Features usadas pelo modelo
+FEATURE_COLS = [
+    "month", "week_of_year", "quarter",
+    "lag_1w", "lag_2w", "lag_3w", "lag_4w",
+    "rolling_mean_4w", "rolling_std_4w", "rolling_max_4w",
+    "rolling_mean_8w",
+    "cumulative_sales", "weeks_active", "sales_velocity",
+]
 
 
 # ============================================================
-# 4. TREINAMENTO E PREVISÃO
+# 5. TREINAMENTO E PREVISÃO
 # ============================================================
 
-def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30) -> pd.DataFrame:
+def predict_simple_average(product_weekly, pname, cat, pid, forecast_days, today):
     """
-    Treina um modelo RandomForest para cada produto e gera previsões.
-    Retorna um DataFrame com previsões futuras para cada produto.
+    Previsao por media ponderada recente.
+    Usado para produtos com poucas semanas de dados.
     """
-    print(f"\n[*] Treinando modelos de previsao ({forecast_days} dias a frente)...\n")
+    recent = product_weekly.tail(4)["quantity_sold"].values
+    if len(recent) == 0 or np.sum(recent) == 0:
+        return None, None
 
-    # Preencher datas faltantes e criar features
-    full_data = fill_missing_dates(daily_sales)
-    full_data = create_features(full_data)
+    # Pesos maiores para semanas mais recentes
+    weights = np.array([1, 2, 3, 4][-len(recent):], dtype=float)
+    avg_weekly = np.average(recent, weights=weights)
+    daily_avg = avg_weekly / 7
 
-    feature_cols = ["day_of_week", "day_of_month", "month",
-                    "week_of_year", "is_weekend", "days_since_start"]
+    if daily_avg < 0.01:
+        return None, None
+
+    future_dates = pd.date_range(today + timedelta(days=1), periods=forecast_days)
+    future_df = pd.DataFrame({
+        "order_date": future_dates,
+        "predicted_quantity": np.round(daily_avg, 2),
+        "product_id": pid,
+        "product_name": pname,
+        "category": cat,
+    })
+
+    metrics = {
+        "product_id": pid,
+        "product_name": pname,
+        "category": cat,
+        "mae": 0,
+        "rmse": 0,
+        "r2_score": 0,
+        "train_size": len(product_weekly),
+        "test_size": 0,
+        "method": "weighted_average",
+    }
+
+    return future_df, metrics
+
+
+def predict_with_ml(product_data, pname, cat, pid, forecast_days, forecast_weeks, today):
+    """
+    Previsao com GradientBoosting e forecasting recursivo.
+    Usado para produtos com dados suficientes.
+    """
+    X = product_data[FEATURE_COLS]
+    y = product_data["quantity_sold"]
+
+    # Split temporal 80/20
+    split_idx = int(len(X) * 0.8)
+    split_idx = max(split_idx, 4)
+    if split_idx >= len(X):
+        split_idx = len(X) - 1
+
+    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+    y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+
+    # GradientBoosting - melhor que RandomForest para dados esparsos
+    model = GradientBoostingRegressor(
+        n_estimators=200,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.8,
+        min_samples_leaf=2,
+        random_state=42,
+    )
+    model.fit(X_train, y_train)
+
+    # Avaliar no conjunto de teste
+    if len(X_test) > 0:
+        y_pred_test = np.maximum(model.predict(X_test), 0)
+        mae = mean_absolute_error(y_test, y_pred_test)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred_test))
+        r2 = r2_score(y_test, y_pred_test) if len(y_test) > 1 else 0
+    else:
+        mae = rmse = r2 = 0
+
+    # Cap: previsao nao pode ultrapassar 2x o maximo historico semanal
+    hist_max_weekly = product_data["quantity_sold"].max()
+    pred_cap = max(hist_max_weekly * 2, 1)
+
+    # --- Forecasting recursivo (semana a semana) ---
+    recent_sales = list(product_data["quantity_sold"].tail(8).values)
+    cum_sales = float(product_data["cumulative_sales"].iloc[-1])
+    weeks_active_val = int(product_data["weeks_active"].iloc[-1])
+    last_week = product_data["week_start"].iloc[-1]
+
+    weekly_preds = []
+    for w in range(forecast_weeks):
+        fw = last_week + pd.Timedelta(weeks=w + 1)
+
+        feat = {
+            "month": fw.month,
+            "week_of_year": int(fw.isocalendar().week),
+            "quarter": (fw.month - 1) // 3 + 1,
+            "lag_1w": recent_sales[-1] if len(recent_sales) >= 1 else 0,
+            "lag_2w": recent_sales[-2] if len(recent_sales) >= 2 else 0,
+            "lag_3w": recent_sales[-3] if len(recent_sales) >= 3 else 0,
+            "lag_4w": recent_sales[-4] if len(recent_sales) >= 4 else 0,
+            "rolling_mean_4w": float(np.mean(recent_sales[-4:])),
+            "rolling_std_4w": float(np.std(recent_sales[-4:])) if len(recent_sales) >= 2 else 0,
+            "rolling_max_4w": float(max(recent_sales[-4:])),
+            "rolling_mean_8w": float(np.mean(recent_sales[-8:])),
+            "cumulative_sales": cum_sales,
+            "weeks_active": weeks_active_val + w + 1,
+            "sales_velocity": (recent_sales[-1] - recent_sales[-2]) if len(recent_sales) >= 2 else 0,
+        }
+
+        pred = float(model.predict(pd.DataFrame([feat]))[0])
+        pred = max(min(pred, pred_cap), 0)
+
+        weekly_preds.append({"week_start": fw, "pred_weekly": round(pred, 2)})
+        recent_sales.append(pred)
+        cum_sales += pred
+
+    # Converter previsoes semanais para diarias
+    future_dates = pd.date_range(today + timedelta(days=1), periods=forecast_days)
+    daily_preds = []
+
+    for date in future_dates:
+        week_monday = date - pd.Timedelta(days=date.weekday())
+        # Encontrar a previsao semanal mais proxima
+        best = None
+        best_dist = 999
+        for wp in weekly_preds:
+            dist = abs((wp["week_start"] - week_monday).days)
+            if dist < best_dist:
+                best_dist = dist
+                best = wp
+
+        daily_pred = round(best["pred_weekly"] / 7, 2) if best else 0
+        daily_preds.append({
+            "order_date": date,
+            "predicted_quantity": daily_pred,
+            "product_id": pid,
+            "product_name": pname,
+            "category": cat,
+        })
+
+    future_df = pd.DataFrame(daily_preds)
+
+    metrics = {
+        "product_id": pid,
+        "product_name": pname,
+        "category": cat,
+        "mae": round(mae, 2),
+        "rmse": round(rmse, 2),
+        "r2_score": round(r2, 3),
+        "train_size": int(len(X_train)),
+        "test_size": int(len(X_test)),
+        "method": "gradient_boosting",
+    }
+
+    return future_df, metrics
+
+
+def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30):
+    """
+    Pipeline completo: dados semanais -> features -> treino -> previsao.
+    Usa GradientBoosting para produtos com dados suficientes,
+    media ponderada para produtos com poucos dados.
+    """
+    forecast_weeks = (forecast_days + 6) // 7
+    today = pd.Timestamp.now().normalize()
+
+    # 1) Criar dados semanais com preenchimento inteligente
+    print("\n[*] Criando dados semanais...")
+    weekly_data = create_weekly_data(daily_sales)
+    weekly_data = create_weekly_features(weekly_data)
+
+    # 2) Filtrar produtos ativos (vendas recentes)
+    cutoff = today - pd.Timedelta(weeks=ACTIVE_WINDOW_WEEKS)
+    active_pids = set(
+        daily_sales[daily_sales["order_date"] >= cutoff]["product_id"].unique()
+    )
+    print(f"\n  Produtos ativos (ultimas {ACTIVE_WINDOW_WEEKS} semanas): {len(active_pids)}")
+
+    # 3) Treinar e prever por produto
+    print(f"\n[*] Treinando modelos ({forecast_weeks} semanas / ~{forecast_days} dias)...\n")
 
     results = []
     model_metrics = []
 
-    products = full_data.groupby(["product_id", "product_name"])
-
-    for (pid, pname), product_data in products:
-        product_data = product_data.sort_values("order_date")
-        cat = product_data["category"].iloc[0] if "category" in product_data.columns else "Sem categoria"
-
-        # Precisa de pelo menos 10 registros para treinar
-        if len(product_data) < 10:
-            print(f"  [!] {pname}: dados insuficientes ({len(product_data)} registros), pulando...")
+    for pid in sorted(active_pids):
+        product_data = weekly_data[weekly_data["product_id"] == pid].sort_values("week_start")
+        if product_data.empty:
             continue
 
-        X = product_data[feature_cols]
-        y = product_data["quantity_sold"]
+        pname = product_data["product_name"].iloc[-1]
+        cat = product_data["category"].iloc[-1]
 
-        # Separar treino/teste (80/20, sem embaralhar pois é serie temporal)
-        split_idx = int(len(X) * 0.8)
-        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+        n_weeks = len(product_data)
 
-        # Treinar modelo
-        model = RandomForestRegressor(
-            n_estimators=100,
-            max_depth=10,
-            random_state=42,
-            n_jobs=1,
-        )
-        model.fit(X_train, y_train)
-
-        # Avaliar
-        y_pred = model.predict(X_test)
-        mae = mean_absolute_error(y_test, y_pred)
-        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-        r2 = r2_score(y_test, y_pred) if len(y_test) > 1 else 0
-
-        model_metrics.append({
-            "product_id": pid,
-            "product_name": pname,
-            "category": cat,
-            "mae": round(mae, 2),
-            "rmse": round(rmse, 2),
-            "r2_score": round(r2, 3),
-            "train_size": len(X_train),
-            "test_size": len(X_test),
-        })
-
-        print(f"  [OK] {pname}: MAE={mae:.2f} | RMSE={rmse:.2f} | R2={r2:.3f}")
-
-        # Gerar previsao futura a partir de HOJE
-        data_start = product_data["order_date"].min()
-        today = pd.Timestamp(datetime.now().date())
-
-        future_dates = pd.date_range(today + timedelta(days=1), periods=forecast_days)
-        future_df = pd.DataFrame({"order_date": future_dates})
-        future_df["day_of_week"] = future_df["order_date"].dt.dayofweek
-        future_df["day_of_month"] = future_df["order_date"].dt.day
-        future_df["month"] = future_df["order_date"].dt.month
-        future_df["week_of_year"] = future_df["order_date"].dt.isocalendar().week.astype(int)
-        future_df["is_weekend"] = (future_df["day_of_week"] >= 5).astype(int)
-        future_df["days_since_start"] = (future_dates - data_start).days
-
-        future_pred = model.predict(future_df[feature_cols])
-        future_pred = np.maximum(future_pred, 0)
-
-        future_df["predicted_quantity"] = np.round(future_pred, 1)
-        future_df["product_id"] = pid
-        future_df["product_name"] = pname
-        future_df["category"] = cat
-        results.append(future_df)
+        if n_weeks >= MIN_WEEKS_ML:
+            # ML approach
+            future_df, metrics = predict_with_ml(
+                product_data, pname, cat, pid, forecast_days, forecast_weeks, today
+            )
+            if future_df is not None:
+                results.append(future_df)
+                model_metrics.append(metrics)
+                print(f"  [ML]  {pname}: MAE={metrics['mae']:.2f} | R2={metrics['r2_score']:.3f} | {n_weeks} semanas")
+        else:
+            # Simple average
+            future_df, metrics = predict_simple_average(
+                product_data, pname, cat, pid, forecast_days, today
+            )
+            if future_df is not None:
+                results.append(future_df)
+                model_metrics.append(metrics)
+                avg = future_df["predicted_quantity"].iloc[0]
+                print(f"  [AVG] {pname}: media diaria = {avg:.2f} | {n_weeks} semanas")
 
     metrics_df = pd.DataFrame(model_metrics)
     predictions_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
@@ -291,11 +521,11 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30) -> pd.
 
 
 # ============================================================
-# 5. VISUALIZAÇÕES
+# 6. VISUALIZAÇÕES
 # ============================================================
 
 def plot_sales_overview(daily_sales: pd.DataFrame):
-    """Gráfico geral de vendas ao longo do tempo."""
+    """Grafico geral de vendas ao longo do tempo."""
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
     # Vendas totais por dia
@@ -327,14 +557,16 @@ def plot_sales_overview(daily_sales: pd.DataFrame):
 
 
 def plot_predictions(daily_sales: pd.DataFrame, predictions_df: pd.DataFrame, top_n: int = 6):
-    """Gráfico de vendas históricas + previsões para os top N produtos."""
+    """Grafico de vendas historicas + previsoes para os top N produtos."""
     if predictions_df.empty:
-        print("  Sem previsões para plotar.")
+        print("  Sem previsoes para plotar.")
         return
 
-    # Selecionar os top_n produtos com mais vendas
+    # Selecionar os top_n produtos com mais vendas entre os que tem previsao
+    predicted_pids = predictions_df["product_id"].unique()
     top_products = (
-        daily_sales.groupby(["product_id", "product_name"])["quantity_sold"]
+        daily_sales[daily_sales["product_id"].isin(predicted_pids)]
+        .groupby(["product_id", "product_name"])["quantity_sold"]
         .sum().nlargest(top_n).reset_index()
     )
 
@@ -348,24 +580,23 @@ def plot_predictions(daily_sales: pd.DataFrame, predictions_df: pd.DataFrame, to
         pname = row["product_name"]
         ax = axes[i]
 
-        # Dados históricos
+        # Dados historicos
         hist = daily_sales[daily_sales["product_id"] == pid].sort_values("order_date")
         ax.plot(hist["order_date"], hist["quantity_sold"],
-                label="Histórico", color="#2196F3", linewidth=1.2, alpha=0.8)
+                label="Historico", color="#2196F3", linewidth=1.2, alpha=0.8)
 
-        # Previsões
+        # Previsoes
         pred = predictions_df[predictions_df["product_id"] == pid].sort_values("order_date")
         if not pred.empty:
             ax.plot(pred["order_date"], pred["predicted_quantity"],
-                    label="Previsão", color="#FF5722", linewidth=2, linestyle="--")
+                    label="Previsao", color="#FF5722", linewidth=2, linestyle="--")
             ax.fill_between(pred["order_date"], pred["predicted_quantity"],
                             alpha=0.15, color="#FF5722")
 
             # Linha separadora
             ax.axvline(x=hist["order_date"].max(), color="gray",
-                       linestyle=":", alpha=0.7, label="Início previsão")
+                       linestyle=":", alpha=0.7, label="Inicio previsao")
 
-        # Truncar nome se muito longo
         title = pname if len(pname) <= 40 else pname[:37] + "..."
         ax.set_title(title, fontsize=11, fontweight="bold")
         ax.tick_params(axis="x", rotation=45)
@@ -375,7 +606,7 @@ def plot_predictions(daily_sales: pd.DataFrame, predictions_df: pd.DataFrame, to
     for j in range(i + 1, len(axes)):
         axes[j].set_visible(False)
 
-    plt.suptitle("Previsão de Vendas por Produto", fontsize=16, fontweight="bold", y=1.02)
+    plt.suptitle("Previsao de Vendas por Produto", fontsize=16, fontweight="bold", y=1.02)
     plt.tight_layout()
     plt.savefig("previsao_vendas.png", dpi=150, bbox_inches="tight")
     plt.close()
@@ -383,14 +614,14 @@ def plot_predictions(daily_sales: pd.DataFrame, predictions_df: pd.DataFrame, to
 
 
 def print_forecast_summary(predictions_df: pd.DataFrame, metrics_df: pd.DataFrame):
-    """Exibe um resumo das previsões no console."""
+    """Exibe um resumo das previsoes no console."""
     if predictions_df.empty:
-        print("\n  Sem previsões disponíveis.")
+        print("\n  Sem previsoes disponiveis.")
         return
 
-    print("\n" + "=" * 70)
-    print("RESUMO DE PREVISAO DE VENDAS (Proximos 30 dias)")
-    print("=" * 70)
+    print("\n" + "=" * 80)
+    print("  RESUMO DE PREVISAO DE VENDAS (Proximos 30 dias)")
+    print("=" * 80)
 
     summary = (
         predictions_df
@@ -408,39 +639,42 @@ def print_forecast_summary(predictions_df: pd.DataFrame, metrics_df: pd.DataFram
     summary["media_diaria"] = summary["media_diaria"].round(2)
     summary["max_dia"] = summary["max_dia"].round(1)
 
-    # Adicionar métricas do modelo
+    # Adicionar metricas do modelo
     summary = summary.merge(
-        metrics_df[["product_id", "mae", "r2_score"]],
+        metrics_df[["product_id", "mae", "r2_score", "method"]],
         on="product_id", how="left"
     )
 
-    print(f"\n{'Produto':<35} {'Total Prev.':<12} {'Média/Dia':<10} {'MAE':<8} {'R²':<8}")
-    print("-" * 73)
+    print(f"\n{'Produto':<40} {'Total':<10} {'Media/d':<10} {'MAE':<8} {'R2':<8} {'Metodo':<18}")
+    print("-" * 94)
 
     for _, row in summary.iterrows():
         name = row["product_name"]
-        if len(name) > 33:
-            name = name[:30] + "..."
+        if len(name) > 38:
+            name = name[:35] + "..."
+        method = row.get("method", "?")
         print(
-            f"{name:<35} "
-            f"{row['total_previsto']:<12.1f} "
+            f"{name:<40} "
+            f"{row['total_previsto']:<10.1f} "
             f"{row['media_diaria']:<10.2f} "
             f"{row['mae']:<8.2f} "
-            f"{row['r2_score']:<8.3f}"
+            f"{row['r2_score']:<8.3f} "
+            f"{method:<18}"
         )
 
-    print("-" * 73)
-    print(f"{'TOTAL':<35} {summary['total_previsto'].sum():<12.1f}")
-    print("=" * 70)
+    print("-" * 94)
+    print(f"{'TOTAL':<40} {summary['total_previsto'].sum():<10.1f}")
+    print("=" * 80)
 
 
 # ============================================================
-# 6. EXECUÇÃO PRINCIPAL
+# 7. EXECUÇÃO PRINCIPAL
 # ============================================================
 
 def main():
     print("=" * 60)
-    print("   SISTEMA DE PREVISÃO DE VENDAS - WooCommerce")
+    print("   SISTEMA DE PREVISAO DE VENDAS - WooCommerce")
+    print("   (v2 - GradientBoosting + Dados Semanais)")
     print("=" * 60)
 
     # 1. Coletar dados
@@ -458,19 +692,21 @@ def main():
         print("\n[ERRO] Nenhum dado de venda foi processado.")
         return
 
-    # 3. Visualizar dados históricos
+    # 3. Visualizar dados historicos
     print("\n[*] Gerando visualizacoes de vendas...")
     plot_sales_overview(daily_sales)
 
-    # 4. Treinar modelos e gerar previsões
+    # 4. Treinar modelos e gerar previsoes
     predictions_df, metrics_df = train_and_predict(daily_sales, forecast_days=30)
 
-    # 5. Exibir métricas dos modelos
+    # 5. Exibir metricas
     if not metrics_df.empty:
-        print("\n[*] Metricas dos Modelos Treinados:")
-        print(metrics_df.to_string(index=False))
+        print(f"\n[*] Modelos treinados: {len(metrics_df)}")
+        ml_count = (metrics_df["method"] == "gradient_boosting").sum()
+        avg_count = (metrics_df["method"] == "weighted_average").sum()
+        print(f"    GradientBoosting: {ml_count} | Media Ponderada: {avg_count}")
 
-    # 6. Visualizar previsões
+    # 6. Visualizar previsoes
     print("\n[*] Gerando graficos de previsao...")
     plot_predictions(daily_sales, predictions_df)
 
@@ -483,11 +719,11 @@ def main():
 
     if not predictions_df.empty:
         predictions_df.to_csv("previsoes_vendas.csv", index=False)
-        print("[OK] Previsoes salvas em: previsoes_vendas.csv")
+        print(f"[OK] Previsoes salvas em: previsoes_vendas.csv ({len(predictions_df)} registros)")
 
     if not metrics_df.empty:
         metrics_df.to_csv("metricas_modelos.csv", index=False)
-        print("[OK] Metricas salvas em: metricas_modelos.csv")
+        print(f"[OK] Metricas salvas em: metricas_modelos.csv ({len(metrics_df)} modelos)")
 
     print("\n>>> Para abrir a dashboard, execute: py dashboard.py")
 
