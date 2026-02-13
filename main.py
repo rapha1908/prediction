@@ -56,7 +56,7 @@ def fetch_all_pages(endpoint: str, extra_params: dict | None = None) -> list:
 
 def fetch_products() -> pd.DataFrame:
     """Busca todos os produtos da loja."""
-    print("\n📦 Buscando produtos...")
+    print("\n[*] Buscando produtos...")
     products = fetch_all_pages("products")
     df = pd.DataFrame(products)
 
@@ -82,7 +82,7 @@ def fetch_products() -> pd.DataFrame:
 
 def fetch_orders() -> pd.DataFrame:
     """Busca todos os pedidos da loja."""
-    print("\n🛒 Buscando pedidos...")
+    print("\n[*] Buscando pedidos...")
     orders = fetch_all_pages("orders", extra_params={"status": "any"})
     df = pd.DataFrame(orders)
 
@@ -103,7 +103,7 @@ def build_sales_dataframe(orders_df: pd.DataFrame, products_df: pd.DataFrame) ->
     Processa os pedidos e constrói um DataFrame de vendas por produto por dia.
     Cada linha = (data, produto, quantidade vendida, receita).
     """
-    print("\n⚙️  Processando dados de vendas...")
+    print("\n[*] Processando dados de vendas...")
     rows = []
 
     for _, order in orders_df.iterrows():
@@ -188,7 +188,7 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30) -> pd.
     Treina um modelo RandomForest para cada produto e gera previsões.
     Retorna um DataFrame com previsões futuras para cada produto.
     """
-    print(f"\n🤖 Treinando modelos de previsão ({forecast_days} dias à frente)...\n")
+    print(f"\n[*] Treinando modelos de previsao ({forecast_days} dias a frente)...\n")
 
     # Preencher datas faltantes e criar features
     full_data = fill_missing_dates(daily_sales)
@@ -207,7 +207,7 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30) -> pd.
 
         # Precisa de pelo menos 10 registros para treinar
         if len(product_data) < 10:
-            print(f"  ⚠️  {pname}: dados insuficientes ({len(product_data)} registros), pulando...")
+            print(f"  [!] {pname}: dados insuficientes ({len(product_data)} registros), pulando...")
             continue
 
         X = product_data[feature_cols]
@@ -243,7 +243,7 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30) -> pd.
             "test_size": len(X_test),
         })
 
-        print(f"  ✅ {pname}: MAE={mae:.2f} | RMSE={rmse:.2f} | R²={r2:.3f}")
+        print(f"  [OK] {pname}: MAE={mae:.2f} | RMSE={rmse:.2f} | R2={r2:.3f}")
 
         # Gerar previsão futura
         last_date = product_data["order_date"].max()
@@ -305,7 +305,7 @@ def plot_sales_overview(daily_sales: pd.DataFrame):
     plt.tight_layout()
     plt.savefig("vendas_overview.png", dpi=150, bbox_inches="tight")
     plt.show()
-    print("  📊 Gráfico salvo: vendas_overview.png")
+    print("  [OK] Grafico salvo: vendas_overview.png")
 
 
 def plot_predictions(daily_sales: pd.DataFrame, predictions_df: pd.DataFrame, top_n: int = 6):
@@ -361,7 +361,7 @@ def plot_predictions(daily_sales: pd.DataFrame, predictions_df: pd.DataFrame, to
     plt.tight_layout()
     plt.savefig("previsao_vendas.png", dpi=150, bbox_inches="tight")
     plt.show()
-    print("  📊 Gráfico salvo: previsao_vendas.png")
+    print("  [OK] Grafico salvo: previsao_vendas.png")
 
 
 def print_forecast_summary(predictions_df: pd.DataFrame, metrics_df: pd.DataFrame):
@@ -371,7 +371,7 @@ def print_forecast_summary(predictions_df: pd.DataFrame, metrics_df: pd.DataFram
         return
 
     print("\n" + "=" * 70)
-    print("📈 RESUMO DE PREVISÃO DE VENDAS (Próximos 30 dias)")
+    print("RESUMO DE PREVISAO DE VENDAS (Proximos 30 dias)")
     print("=" * 70)
 
     summary = (
@@ -430,18 +430,18 @@ def main():
     orders_df = fetch_orders()
 
     if orders_df.empty:
-        print("\n❌ Não foi possível obter pedidos. Verifique a API.")
+        print("\n[ERRO] Nao foi possivel obter pedidos. Verifique a API.")
         return
 
     # 2. Processar vendas
     daily_sales = build_sales_dataframe(orders_df, products_df)
 
     if daily_sales.empty:
-        print("\n❌ Nenhum dado de venda foi processado.")
+        print("\n[ERRO] Nenhum dado de venda foi processado.")
         return
 
     # 3. Visualizar dados históricos
-    print("\n📊 Gerando visualizações de vendas...")
+    print("\n[*] Gerando visualizacoes de vendas...")
     plot_sales_overview(daily_sales)
 
     # 4. Treinar modelos e gerar previsões
@@ -449,24 +449,29 @@ def main():
 
     # 5. Exibir métricas dos modelos
     if not metrics_df.empty:
-        print("\n📋 Métricas dos Modelos Treinados:")
+        print("\n[*] Metricas dos Modelos Treinados:")
         print(metrics_df.to_string(index=False))
 
     # 6. Visualizar previsões
-    print("\n📊 Gerando gráficos de previsão...")
+    print("\n[*] Gerando graficos de previsao...")
     plot_predictions(daily_sales, predictions_df)
 
     # 7. Resumo final
     print_forecast_summary(predictions_df, metrics_df)
 
-    # 8. Salvar previsões em CSV
+    # 8. Salvar dados em CSV
+    daily_sales.to_csv("vendas_historicas.csv", index=False)
+    print("\n[OK] Historico salvo em: vendas_historicas.csv")
+
     if not predictions_df.empty:
         predictions_df.to_csv("previsoes_vendas.csv", index=False)
-        print("\n💾 Previsões salvas em: previsoes_vendas.csv")
+        print("[OK] Previsoes salvas em: previsoes_vendas.csv")
 
     if not metrics_df.empty:
         metrics_df.to_csv("metricas_modelos.csv", index=False)
-        print("💾 Métricas salvas em: metricas_modelos.csv")
+        print("[OK] Metricas salvas em: metricas_modelos.csv")
+
+    print("\n>>> Para abrir a dashboard, execute: py dashboard.py")
 
 
 if __name__ == "__main__":
