@@ -42,11 +42,58 @@ def load_data():
 hist_df, pred_df, metrics_df = load_data()
 
 # ============================================================
+# HELPERS MULTI-CATEGORIA
+# ============================================================
+
+def parse_categories(cat_str):
+    """Extrai lista de categorias de uma string pipe-separada."""
+    if pd.isna(cat_str) or str(cat_str).strip() == "":
+        return ["Sem categoria"]
+    return [c.strip() for c in str(cat_str).split("|") if c.strip()]
+
+
+def build_product_cat_map(df):
+    """Cria mapa product_id -> set de categorias."""
+    mapping = {}
+    for _, row in df.drop_duplicates("product_id").iterrows():
+        mapping[row["product_id"]] = set(parse_categories(row["category"]))
+    return mapping
+
+
+def product_matches_cats(product_id, selected_cats, cat_map):
+    """Verifica se um produto pertence a alguma das categorias selecionadas."""
+    return bool(cat_map.get(product_id, set()) & set(selected_cats))
+
+
+def filter_by_categories(df, selected_cats, cat_map):
+    """Filtra DataFrame para produtos que pertencem a alguma das categorias."""
+    matching_pids = {
+        pid for pid, cats in cat_map.items()
+        if cats & set(selected_cats)
+    }
+    return df[df["product_id"].isin(matching_pids)]
+
+
+def explode_categories(df):
+    """Expande linhas para que cada categoria tenha sua propria linha."""
+    df = df.copy()
+    df["category_list"] = df["category"].apply(parse_categories)
+    return df.explode("category_list").rename(columns={"category_list": "cat_single"})
+
+
+# ============================================================
 # PRE-PROCESSAR
 # ============================================================
 
-# Categorias unicas
-all_categories = sorted(hist_df["category"].dropna().unique().tolist())
+# Mapa de categorias por produto
+product_cat_map = build_product_cat_map(hist_df)
+
+# Categorias unicas (expandidas de pipe-separadas)
+all_categories = sorted(set(
+    cat
+    for cats_str in hist_df["category"].dropna().unique()
+    for cat in parse_categories(cats_str)
+))
 
 # Lista de produtos (ordenar por total vendido)
 product_sales = (
@@ -91,7 +138,6 @@ PLOT_LAYOUT = dict(
     margin=dict(l=40, r=20, t=40, b=40),
     xaxis=dict(gridcolor=COLORS["grid"], showline=False),
     yaxis=dict(gridcolor=COLORS["grid"], showline=False, rangemode="tozero"),
-    legend=dict(bgcolor="rgba(0,0,0,0)"),
     hovermode="x unified",
 )
 
@@ -137,6 +183,10 @@ dropdown_style = {
     "borderRadius": "8px",
 }
 
+H_LEGEND = dict(
+    orientation="h", yanchor="bottom", y=1.02,
+    xanchor="right", x=1, bgcolor="rgba(0,0,0,0)",
+)
 
 # ============================================================
 # LAYOUT
@@ -314,7 +364,7 @@ app.layout = html.Div(
 def update_product_options(selected_cats):
     if not selected_cats:
         return [], None
-    filtered = product_sales[product_sales["category"].isin(selected_cats)]
+    filtered = filter_by_categories(product_sales, selected_cats, product_cat_map)
     options = [
         {"label": f"{r['product_name']}  ({int(r['quantity_sold'])} vendidos)",
          "value": str(r["product_id"])}
@@ -336,10 +386,14 @@ def update_category_timeline(selected_cats, granularity):
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
-    filtered = hist_df[hist_df["category"].isin(selected_cats)]
+    # Explodir categorias para agrupar corretamente por categoria individual
+    exploded = explode_categories(hist_df)
+    exploded = exploded[exploded["cat_single"].isin(selected_cats)]
 
     for i, cat in enumerate(selected_cats):
-        cat_data = filtered[filtered["category"] == cat]
+        cat_data = exploded[exploded["cat_single"] == cat]
+        if cat_data.empty:
+            continue
         agg = cat_data.groupby("order_date")["quantity_sold"].sum().reset_index()
 
         if granularity == "weekly":
@@ -359,7 +413,7 @@ def update_category_timeline(selected_cats, granularity):
     fig.update_layout(**PLOT_LAYOUT)
     fig.update_layout(
         xaxis_title="Data", yaxis_title="Quantidade Vendida",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+        legend=H_LEGEND,
     )
     return fig
 
@@ -375,13 +429,17 @@ def update_category_forecast(selected_cats):
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
+    # Explodir historico e previsao
+    hist_exp = explode_categories(hist_df)
+    pred_exp = explode_categories(pred_df)
+
     for i, cat in enumerate(selected_cats):
         # Historico agregado por categoria
-        h = hist_df[hist_df["category"] == cat]
+        h = hist_exp[hist_exp["cat_single"] == cat]
         h_daily = h.groupby("order_date")["quantity_sold"].sum().reset_index()
 
         # Previsao agregada por categoria
-        p = pred_df[pred_df["category"] == cat]
+        p = pred_exp[pred_exp["cat_single"] == cat]
         p_daily = p.groupby("order_date")["predicted_quantity"].sum().reset_index()
 
         color = CATEGORY_COLORS[i % len(CATEGORY_COLORS)]
@@ -409,7 +467,7 @@ def update_category_forecast(selected_cats):
     fig.update_layout(**PLOT_LAYOUT)
     fig.update_layout(
         xaxis_title="Data", yaxis_title="Quantidade",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+        legend=H_LEGEND,
     )
     return fig
 
@@ -425,7 +483,8 @@ def update_top_products(selected_cats):
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
-    filtered = product_sales[product_sales["category"].isin(selected_cats)].head(15).iloc[::-1]
+    filtered = filter_by_categories(product_sales, selected_cats, product_cat_map)
+    filtered = filtered.head(15).iloc[::-1]
 
     fig.add_trace(go.Bar(
         x=filtered["quantity_sold"], y=filtered["product_name"],
@@ -434,8 +493,8 @@ def update_top_products(selected_cats):
         texttemplate="%{x:.0f}", textposition="outside", textfont_size=11,
     ))
 
+    fig.update_layout(**PLOT_LAYOUT)
     fig.update_layout(
-        **{k: v for k, v in PLOT_LAYOUT.items() if k != "margin"},
         margin=dict(l=10, r=40, t=10, b=30),
         showlegend=False,
         yaxis_title="", xaxis_title="Quantidade Vendida",
@@ -494,7 +553,7 @@ def update_product_forecast(product_id):
     fig.update_layout(**PLOT_LAYOUT)
     fig.update_layout(
         xaxis_title="Data", yaxis_title="Quantidade",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+        legend=H_LEGEND,
     )
     return fig
 
@@ -510,7 +569,7 @@ def update_monthly_revenue(selected_cats):
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
-    filtered = hist_df[hist_df["category"].isin(selected_cats)].copy()
+    filtered = filter_by_categories(hist_df, selected_cats, product_cat_map).copy()
     filtered["month"] = filtered["order_date"].dt.to_period("M").apply(lambda r: r.start_time)
     monthly = filtered.groupby("month")["revenue"].sum().reset_index()
 
@@ -518,7 +577,8 @@ def update_monthly_revenue(selected_cats):
         x=monthly["month"], y=monthly["revenue"],
         marker_color=COLORS["accent3"], marker_line_width=0, opacity=0.85,
     ))
-    fig.update_layout(**PLOT_LAYOUT, xaxis_title="Mes", yaxis_title="Receita ($)", showlegend=False)
+    fig.update_layout(**PLOT_LAYOUT)
+    fig.update_layout(xaxis_title="Mes", yaxis_title="Receita ($)", showlegend=False)
     return fig
 
 
@@ -534,7 +594,7 @@ def update_weekday_chart(selected_cats):
         return fig
 
     weekday_names = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"]
-    filtered = hist_df[hist_df["category"].isin(selected_cats)].copy()
+    filtered = filter_by_categories(hist_df, selected_cats, product_cat_map).copy()
     filtered["weekday"] = filtered["order_date"].dt.dayofweek
     wd = filtered.groupby("weekday")["quantity_sold"].sum().reset_index()
     wd["weekday_name"] = wd["weekday"].map(lambda x: weekday_names[x])
@@ -545,7 +605,8 @@ def update_weekday_chart(selected_cats):
         x=wd["weekday_name"], y=wd["quantity_sold"],
         marker_color=colors, marker_line_width=0,
     ))
-    fig.update_layout(**PLOT_LAYOUT, xaxis_title="", yaxis_title="Quantidade", showlegend=False)
+    fig.update_layout(**PLOT_LAYOUT)
+    fig.update_layout(xaxis_title="", yaxis_title="Quantidade", showlegend=False)
     return fig
 
 
@@ -558,7 +619,11 @@ def update_metrics_table(selected_cats):
     if not selected_cats:
         return html.P("Selecione ao menos uma categoria.", style={"color": COLORS["text_muted"]})
 
-    filtered_metrics = metrics_df[metrics_df["category"].isin(selected_cats)]
+    # Filtrar metricas por categorias (multi-categoria)
+    filtered_metrics = filter_by_categories(metrics_df, selected_cats, product_cat_map)
+
+    if filtered_metrics.empty:
+        return html.P("Nenhum produto encontrado nas categorias selecionadas.", style={"color": COLORS["text_muted"]})
 
     # Resumo de metricas
     ms = (
@@ -568,8 +633,9 @@ def update_metrics_table(selected_cats):
     )
 
     # Juntar com previsao total
+    filtered_pred = filter_by_categories(pred_df, selected_cats, product_cat_map)
     pred_summary = (
-        pred_df[pred_df["category"].isin(selected_cats)]
+        filtered_pred
         .groupby("product_id")
         .agg(total_prev=("predicted_quantity", "sum"), media_dia=("predicted_quantity", "mean"))
         .reset_index()
@@ -599,7 +665,7 @@ def update_metrics_table(selected_cats):
 
     header = html.Tr([
         html.Th("Produto", style=header_style),
-        html.Th("Categoria", style=header_style),
+        html.Th("Categorias", style=header_style),
         html.Th("MAE", style={**header_style, "textAlign": "right"}),
         html.Th("RMSE", style={**header_style, "textAlign": "right"}),
         html.Th("R2", style={**header_style, "textAlign": "right"}),
@@ -612,9 +678,13 @@ def update_metrics_table(selected_cats):
         name = row["product_name"]
         if len(name) > 50:
             name = name[:47] + "..."
+        # Mostrar categorias de forma legivel (pipe -> virgula)
+        cat_display = str(row["category"]).replace("|", ", ")
+        if len(cat_display) > 40:
+            cat_display = cat_display[:37] + "..."
         rows.append(html.Tr([
             html.Td(name, style=cell_style),
-            html.Td(row["category"], style={**cell_style, "color": COLORS["accent4"]}),
+            html.Td(cat_display, style={**cell_style, "color": COLORS["accent4"], "fontSize": "12px"}),
             html.Td(f"{row['mae']:.2f}", style={**cell_style, "textAlign": "right"}),
             html.Td(f"{row['rmse']:.2f}", style={**cell_style, "textAlign": "right"}),
             html.Td(f"{row['r2_score']:.3f}", style={**cell_style, "textAlign": "right", "color": r2_color(row["r2_score"]), "fontWeight": "600"}),

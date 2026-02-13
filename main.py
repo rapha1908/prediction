@@ -71,10 +71,12 @@ def fetch_products() -> pd.DataFrame:
     available_cols = [c for c in cols if c in df.columns]
     df = df[available_cols]
 
-    # Extrair nome da primeira categoria
+    # Extrair TODAS as categorias do produto (pipe-separadas)
     if "categories" in df.columns:
         df["category"] = df["categories"].apply(
-            lambda cats: cats[0]["name"] if isinstance(cats, list) and len(cats) > 0 else "Sem categoria"
+            lambda cats: "|".join(c["name"] for c in cats)
+            if isinstance(cats, list) and len(cats) > 0
+            else "Sem categoria"
         )
         df.drop(columns=["categories"], inplace=True)
 
@@ -237,7 +239,7 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30) -> pd.
             n_estimators=100,
             max_depth=10,
             random_state=42,
-            n_jobs=-1,
+            n_jobs=1,
         )
         model.fit(X_train, y_train)
 
@@ -260,18 +262,18 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30) -> pd.
 
         print(f"  [OK] {pname}: MAE={mae:.2f} | RMSE={rmse:.2f} | R2={r2:.3f}")
 
-        # Gerar previsao futura
-        last_date = product_data["order_date"].max()
-        max_days_since_start = product_data["days_since_start"].max()
+        # Gerar previsao futura a partir de HOJE
+        data_start = product_data["order_date"].min()
+        today = pd.Timestamp(datetime.now().date())
 
-        future_dates = pd.date_range(last_date + timedelta(days=1), periods=forecast_days)
+        future_dates = pd.date_range(today + timedelta(days=1), periods=forecast_days)
         future_df = pd.DataFrame({"order_date": future_dates})
         future_df["day_of_week"] = future_df["order_date"].dt.dayofweek
         future_df["day_of_month"] = future_df["order_date"].dt.day
         future_df["month"] = future_df["order_date"].dt.month
         future_df["week_of_year"] = future_df["order_date"].dt.isocalendar().week.astype(int)
         future_df["is_weekend"] = (future_df["day_of_week"] >= 5).astype(int)
-        future_df["days_since_start"] = max_days_since_start + np.arange(1, forecast_days + 1)
+        future_df["days_since_start"] = (future_dates - data_start).days
 
         future_pred = model.predict(future_df[feature_cols])
         future_pred = np.maximum(future_pred, 0)
