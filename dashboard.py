@@ -232,58 +232,74 @@ pred_total_qty = pred_df["predicted_quantity"].sum()
 # ============================================================
 
 COLORS = {
-    "bg": "#0f1117",
-    "card": "#1a1d23",
-    "card_border": "#2d3139",
-    "text": "#e6e6e6",
-    "text_muted": "#8b949e",
-    "accent": "#58a6ff",
-    "accent2": "#f97316",
-    "accent3": "#22c55e",
-    "accent4": "#a855f7",
-    "red": "#ef4444",
-    "grid": "#21262d",
+    "bg": "#0b0b14",
+    "card": "#131320",
+    "card_border": "#1f1f32",
+    "text": "#f0ebe3",
+    "text_muted": "#8a847a",
+    "accent": "#c8a44e",       # Gold – primary accent
+    "accent2": "#e0b84a",      # Bright gold
+    "accent3": "#5aaa88",      # Sage green
+    "accent4": "#b87348",      # Warm copper
+    "red": "#d44a4a",
+    "grid": "#1a1a2c",
 }
 
-FONT = "Inter, -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif"
+FONT = "'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
 
 PLOT_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
     font=dict(family=FONT, color=COLORS["text"], size=12),
     margin=dict(l=40, r=20, t=40, b=40),
-    xaxis=dict(gridcolor=COLORS["grid"], showline=False),
-    yaxis=dict(gridcolor=COLORS["grid"], showline=False, rangemode="tozero"),
+    xaxis=dict(gridcolor=COLORS["grid"], showline=False, zeroline=False),
+    yaxis=dict(gridcolor=COLORS["grid"], showline=False, rangemode="tozero", zeroline=False),
     hovermode="x unified",
+    hoverlabel=dict(bgcolor=COLORS["card"], bordercolor=COLORS["accent"], font_color=COLORS["text"]),
 )
 
-CATEGORY_COLORS = px.colors.qualitative.Plotly
+# Warm palette for chart traces (gold, copper, sage, cream…)
+CATEGORY_COLORS = [
+    "#c8a44e", "#b87348", "#5aaa88", "#d4a843", "#8c6d46",
+    "#7eab8e", "#d9c07b", "#a67c52", "#6db89a", "#e0c87a",
+]
 
 
 def card_style(extra=None):
     base = {
         "backgroundColor": COLORS["card"],
         "border": f"1px solid {COLORS['card_border']}",
-        "borderRadius": "12px",
-        "padding": "24px",
+        "borderRadius": "14px",
+        "padding": "28px",
+        "boxShadow": "0 2px 12px rgba(0,0,0,0.25)",
     }
     if extra:
         base.update(extra)
     return base
 
 
+def section_label(text):
+    """Small uppercase label above section titles – tcche.org pattern."""
+    return html.P(text, style={
+        "color": COLORS["accent"], "fontSize": "11px",
+        "textTransform": "uppercase", "letterSpacing": "2px",
+        "fontWeight": "600", "margin": "0 0 6px",
+    })
+
+
 def kpi_card(title, value, subtitle="", color=COLORS["accent"]):
     return html.Div(
-        style=card_style({"textAlign": "center", "flex": "1", "minWidth": "170px"}),
+        style=card_style({"textAlign": "center", "flex": "1", "minWidth": "170px",
+                          "borderTop": f"3px solid {color}"}),
         children=[
             html.P(title, style={
-                "color": COLORS["text_muted"], "fontSize": "12px",
+                "color": COLORS["text_muted"], "fontSize": "11px",
                 "marginBottom": "4px", "textTransform": "uppercase",
-                "letterSpacing": "0.5px", "fontWeight": "500",
+                "letterSpacing": "1.5px", "fontWeight": "600",
             }),
             html.H2(value, style={
-                "color": color, "margin": "8px 0 4px",
-                "fontSize": "26px", "fontWeight": "700",
+                "color": color, "margin": "10px 0 4px",
+                "fontSize": "28px", "fontWeight": "700",
             }),
             html.P(subtitle, style={
                 "color": COLORS["text_muted"], "fontSize": "11px", "margin": "0",
@@ -308,8 +324,13 @@ H_LEGEND = dict(
 # LAYOUT
 # ============================================================
 
-app = Dash(__name__)
-app.title = "Sales Forecast Dashboard"
+app = Dash(
+    __name__,
+    external_stylesheets=[
+        "https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap"
+    ],
+)
+app.title = "TCCHE – Sales Forecast Dashboard"
 
 app.layout = html.Div(
     style={
@@ -321,17 +342,22 @@ app.layout = html.Div(
         # --- HEADER ---
         html.Div(
             style={
-                "background": "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
-                "padding": "28px 48px", "borderBottom": f"1px solid {COLORS['card_border']}",
+                "background": "linear-gradient(135deg, #13121e 0%, #1a1528 40%, #1e1610 100%)",
+                "padding": "36px 48px 32px", "borderBottom": f"1px solid {COLORS['card_border']}",
             },
             children=[
+                html.P("TCCHE", style={
+                    "color": COLORS["accent"], "fontSize": "11px", "margin": "0 0 6px",
+                    "letterSpacing": "3px", "textTransform": "uppercase", "fontWeight": "600",
+                }),
                 html.H1("Sales Forecast", style={
-                    "margin": "0 0 4px", "fontSize": "28px", "fontWeight": "700",
-                    "background": "linear-gradient(90deg, #58a6ff, #a855f7)",
+                    "margin": "0 0 6px", "fontSize": "30px", "fontWeight": "700",
+                    "background": "linear-gradient(90deg, #c8a44e, #e0c87a, #b87348)",
                     "WebkitBackgroundClip": "text", "WebkitTextFillColor": "transparent",
                 }),
                 html.P(f"Data from {date_min} to {date_max}", style={
                     "color": COLORS["text_muted"], "margin": "0", "fontSize": "14px",
+                    "letterSpacing": "0.5px",
                 }),
             ],
         ),
@@ -345,15 +371,15 @@ app.layout = html.Div(
             ),
 
             # ============ AI SALES ASSISTANT ============
-            html.Div(style=card_style({"marginBottom": "28px"}), children=[
+            html.Div(style=card_style({"marginBottom": "28px", "borderTop": f"3px solid {COLORS['accent']}"}), children=[
                 # Header + quick action buttons
                 html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
-                                "marginBottom": "16px", "flexWrap": "wrap", "gap": "12px"}, children=[
+                                "marginBottom": "18px", "flexWrap": "wrap", "gap": "12px"}, children=[
                     html.Div(children=[
-                        html.H3("AI Sales Assistant", style={
-                            "margin": "0 0 2px", "fontSize": "16px", "fontWeight": "600",
-                            "background": "linear-gradient(90deg, #58a6ff, #a855f7)",
-                            "WebkitBackgroundClip": "text", "WebkitTextFillColor": "transparent",
+                        section_label("AI ASSISTANT"),
+                        html.H3("Sales Intelligence", style={
+                            "margin": "0 0 2px", "fontSize": "18px", "fontWeight": "700",
+                            "color": COLORS["text"],
                         }),
                         html.P("Ask anything about your sales, products, or forecasts", style={
                             "color": COLORS["text_muted"], "fontSize": "12px", "margin": "0",
@@ -361,28 +387,28 @@ app.layout = html.Div(
                     ]),
                     html.Div(style={"display": "flex", "gap": "8px", "flexWrap": "wrap"}, children=[
                         html.Button("Daily Report", id="quick-daily", n_clicks=0, style={
-                            "backgroundColor": "rgba(88, 166, 255, 0.1)", "color": COLORS["accent"],
+                            "backgroundColor": "rgba(200, 164, 78, 0.1)", "color": COLORS["accent"],
                             "border": f"1px solid {COLORS['accent']}", "borderRadius": "6px",
-                            "padding": "6px 14px", "fontSize": "12px", "cursor": "pointer",
-                            "fontFamily": FONT, "fontWeight": "500",
+                            "padding": "7px 16px", "fontSize": "12px", "cursor": "pointer",
+                            "fontFamily": FONT, "fontWeight": "500", "letterSpacing": "0.5px",
                         }),
                         html.Button("Weekly Summary", id="quick-weekly", n_clicks=0, style={
-                            "backgroundColor": "rgba(34, 197, 94, 0.1)", "color": COLORS["accent3"],
+                            "backgroundColor": "rgba(90, 170, 136, 0.1)", "color": COLORS["accent3"],
                             "border": f"1px solid {COLORS['accent3']}", "borderRadius": "6px",
-                            "padding": "6px 14px", "fontSize": "12px", "cursor": "pointer",
-                            "fontFamily": FONT, "fontWeight": "500",
+                            "padding": "7px 16px", "fontSize": "12px", "cursor": "pointer",
+                            "fontFamily": FONT, "fontWeight": "500", "letterSpacing": "0.5px",
                         }),
                         html.Button("Top Products", id="quick-top", n_clicks=0, style={
-                            "backgroundColor": "rgba(249, 115, 22, 0.1)", "color": COLORS["accent2"],
-                            "border": f"1px solid {COLORS['accent2']}", "borderRadius": "6px",
-                            "padding": "6px 14px", "fontSize": "12px", "cursor": "pointer",
-                            "fontFamily": FONT, "fontWeight": "500",
+                            "backgroundColor": "rgba(184, 115, 72, 0.1)", "color": COLORS["accent4"],
+                            "border": f"1px solid {COLORS['accent4']}", "borderRadius": "6px",
+                            "padding": "7px 16px", "fontSize": "12px", "cursor": "pointer",
+                            "fontFamily": FONT, "fontWeight": "500", "letterSpacing": "0.5px",
                         }),
                         html.Button("Forecast Analysis", id="quick-forecast", n_clicks=0, style={
-                            "backgroundColor": "rgba(168, 85, 247, 0.1)", "color": COLORS["accent4"],
-                            "border": f"1px solid {COLORS['accent4']}", "borderRadius": "6px",
-                            "padding": "6px 14px", "fontSize": "12px", "cursor": "pointer",
-                            "fontFamily": FONT, "fontWeight": "500",
+                            "backgroundColor": "rgba(224, 184, 74, 0.1)", "color": COLORS["accent2"],
+                            "border": f"1px solid {COLORS['accent2']}", "borderRadius": "6px",
+                            "padding": "7px 16px", "fontSize": "12px", "cursor": "pointer",
+                            "fontFamily": FONT, "fontWeight": "500", "letterSpacing": "0.5px",
                         }),
                     ]),
                 ]),
@@ -390,14 +416,14 @@ app.layout = html.Div(
                 # Chat messages area
                 html.Div(id="chat-display", style={
                     "maxHeight": "500px", "overflowY": "auto", "marginBottom": "16px",
-                    "padding": "16px", "backgroundColor": COLORS["bg"],
-                    "borderRadius": "8px", "border": f"1px solid {COLORS['card_border']}",
+                    "padding": "18px", "backgroundColor": COLORS["bg"],
+                    "borderRadius": "10px", "border": f"1px solid {COLORS['card_border']}",
                     "minHeight": "80px",
                 }, children=[
                     html.Div(style={"display": "flex", "gap": "10px", "alignItems": "flex-start"}, children=[
                         html.Div("AI", style={
-                            "backgroundColor": COLORS["accent4"], "color": "#fff",
-                            "borderRadius": "50%", "width": "28px", "height": "28px",
+                            "backgroundColor": COLORS["accent"], "color": COLORS["bg"],
+                            "borderRadius": "50%", "width": "30px", "height": "30px",
                             "display": "flex", "alignItems": "center", "justifyContent": "center",
                             "fontSize": "11px", "fontWeight": "700", "flexShrink": "0",
                         }),
@@ -406,7 +432,7 @@ app.layout = html.Div(
                             "products, or forecasts. You can also use the quick action buttons above to "
                             "generate reports instantly.",
                             style={"color": COLORS["text"], "fontSize": "13px", "margin": "0",
-                                   "lineHeight": "1.6", "flex": "1"},
+                                   "lineHeight": "1.7", "flex": "1"},
                         ),
                     ]),
                 ]),
@@ -427,10 +453,10 @@ app.layout = html.Div(
                         },
                     ),
                     html.Button("Send", id="chat-send", n_clicks=0, style={
-                        "backgroundColor": COLORS["accent"], "color": "#fff",
-                        "border": "none", "borderRadius": "8px", "padding": "12px 24px",
-                        "fontSize": "13px", "fontWeight": "600", "cursor": "pointer",
-                        "fontFamily": FONT,
+                        "backgroundColor": COLORS["accent"], "color": COLORS["bg"],
+                        "border": "none", "borderRadius": "8px", "padding": "12px 28px",
+                        "fontSize": "13px", "fontWeight": "700", "cursor": "pointer",
+                        "fontFamily": FONT, "letterSpacing": "0.5px",
                     }),
                     html.Button("Clear", id="chat-clear", n_clicks=0, style={
                         "backgroundColor": "transparent", "color": COLORS["text_muted"],
@@ -456,41 +482,47 @@ app.layout = html.Div(
                         value="active",
                         style={"backgroundColor": COLORS["bg"], "color": COLORS["text_muted"],
                                "border": f"1px solid {COLORS['card_border']}", "borderRadius": "8px 8px 0 0",
-                               "padding": "12px 24px", "fontFamily": FONT, "fontSize": "14px", "fontWeight": "500"},
+                               "padding": "12px 28px", "fontFamily": FONT, "fontSize": "13px", "fontWeight": "500",
+                               "letterSpacing": "0.5px", "textTransform": "uppercase"},
                         selected_style={"backgroundColor": COLORS["card"], "color": COLORS["accent"],
                                         "border": f"1px solid {COLORS['card_border']}", "borderBottom": "none",
-                                        "borderRadius": "8px 8px 0 0", "padding": "12px 24px",
-                                        "fontFamily": FONT, "fontSize": "14px", "fontWeight": "700"},
+                                        "borderRadius": "8px 8px 0 0", "padding": "12px 28px",
+                                        "fontFamily": FONT, "fontSize": "13px", "fontWeight": "700",
+                                        "letterSpacing": "0.5px", "textTransform": "uppercase"},
                     ),
                     dcc.Tab(
                         label=f"Past Events ({n_past})",
                         value="past",
                         style={"backgroundColor": COLORS["bg"], "color": COLORS["text_muted"],
                                "border": f"1px solid {COLORS['card_border']}", "borderRadius": "8px 8px 0 0",
-                               "padding": "12px 24px", "fontFamily": FONT, "fontSize": "14px", "fontWeight": "500"},
-                        selected_style={"backgroundColor": COLORS["card"], "color": COLORS["accent2"],
+                               "padding": "12px 28px", "fontFamily": FONT, "fontSize": "13px", "fontWeight": "500",
+                               "letterSpacing": "0.5px", "textTransform": "uppercase"},
+                        selected_style={"backgroundColor": COLORS["card"], "color": COLORS["accent4"],
                                         "border": f"1px solid {COLORS['card_border']}", "borderBottom": "none",
-                                        "borderRadius": "8px 8px 0 0", "padding": "12px 24px",
-                                        "fontFamily": FONT, "fontSize": "14px", "fontWeight": "700"},
+                                        "borderRadius": "8px 8px 0 0", "padding": "12px 28px",
+                                        "fontFamily": FONT, "fontSize": "13px", "fontWeight": "700",
+                                        "letterSpacing": "0.5px", "textTransform": "uppercase"},
                     ),
                 ],
             ),
 
             # ============ REPORTE DIARIO ============
             html.Div(style=card_style({"marginBottom": "28px"}), children=[
-                html.H3("Daily Report - Sales & 7-Day Forecast", style={
-                    "margin": "0 0 4px", "fontSize": "16px", "fontWeight": "600",
+                section_label("DAILY OVERVIEW"),
+                html.H3("Sales & 7-Day Forecast", style={
+                    "margin": "0 0 4px", "fontSize": "18px", "fontWeight": "700",
                 }),
                 html.P("Recent sales per product and daily forecast for the next 7 days", style={
-                    "color": COLORS["text_muted"], "fontSize": "13px", "marginBottom": "16px",
+                    "color": COLORS["text_muted"], "fontSize": "13px", "marginBottom": "18px",
                 }),
                 html.Div(id="daily-report", style={"overflowX": "auto", "maxHeight": "600px", "overflowY": "auto"}),
             ]),
 
             # ============ FILTRO DE CATEGORIAS ============
             html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                section_label("FILTERS"),
                 html.H3("Filter by Category", style={
-                    "margin": "0 0 12px", "fontSize": "16px", "fontWeight": "600",
+                    "margin": "0 0 14px", "fontSize": "18px", "fontWeight": "700",
                 }),
                 html.Div(style={"display": "flex", "gap": "16px", "alignItems": "center", "flexWrap": "wrap"}, children=[
                     html.Div(style={"flex": "1", "minWidth": "300px"}, children=[
@@ -524,24 +556,27 @@ app.layout = html.Div(
 
             # ============ VENDAS POR CATEGORIA AO LONGO DO TEMPO ============
             html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                section_label("TIMELINE"),
                 html.H3("Sales by Category Over Time", style={
-                    "margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600",
+                    "margin": "0 0 18px", "fontSize": "18px", "fontWeight": "700",
                 }),
                 dcc.Graph(id="category-timeline", config={"displayModeBar": False}),
             ]),
 
             # ============ PREVISAO POR CATEGORIA (DIARIA) ============
             html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                section_label("FORECAST"),
                 html.H3("Daily Forecast by Category (Next 30 Days)", style={
-                    "margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600",
+                    "margin": "0 0 18px", "fontSize": "18px", "fontWeight": "700",
                 }),
                 dcc.Graph(id="category-forecast", config={"displayModeBar": False}),
             ]),
 
             # ============ PREVISAO INDIVIDUAL POR PRODUTO (largura total) ============
             html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                section_label("PRODUCT DETAIL"),
                 html.H3("Actual vs Forecast by Product", style={
-                    "margin": "0 0 12px", "fontSize": "16px", "fontWeight": "600",
+                    "margin": "0 0 14px", "fontSize": "18px", "fontWeight": "700",
                 }),
                 dcc.Dropdown(
                     id="product-selector",
@@ -553,8 +588,9 @@ app.layout = html.Div(
 
             # ============ TOP PRODUTOS ============
             html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                section_label("TOP SELLERS"),
                 html.H3("Top 15 Products (Selected Categories)", style={
-                    "margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600",
+                    "margin": "0 0 18px", "fontSize": "18px", "fontWeight": "700",
                 }),
                 dcc.Graph(id="top-products-chart", config={"displayModeBar": False}),
             ]),
@@ -563,15 +599,17 @@ app.layout = html.Div(
             html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "24px", "marginBottom": "28px"}, children=[
 
                 html.Div(style=card_style(), children=[
-                    html.H3("Monthly Revenue (Selected Categories)", style={
-                        "margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600",
+                    section_label("REVENUE"),
+                    html.H3("Monthly Revenue", style={
+                        "margin": "0 0 18px", "fontSize": "18px", "fontWeight": "700",
                     }),
                     dcc.Graph(id="monthly-revenue", config={"displayModeBar": False}),
                 ]),
 
                 html.Div(style=card_style(), children=[
+                    section_label("PATTERNS"),
                     html.H3("Sales by Day of Week", style={
-                        "margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600",
+                        "margin": "0 0 18px", "fontSize": "18px", "fontWeight": "700",
                     }),
                     dcc.Graph(id="weekday-chart", config={"displayModeBar": False}),
                 ]),
@@ -579,18 +617,24 @@ app.layout = html.Div(
 
             # ============ TABELA DE METRICAS ============
             html.Div(style=card_style({"marginBottom": "28px"}), children=[
-                html.H3("Prediction Model Metrics", style={
-                    "margin": "0 0 8px", "fontSize": "16px", "fontWeight": "600",
+                section_label("MODEL PERFORMANCE"),
+                html.H3("Prediction Metrics", style={
+                    "margin": "0 0 4px", "fontSize": "18px", "fontWeight": "700",
                 }),
                 html.P("Sorted by total forecast (30 days)", style={
-                    "color": COLORS["text_muted"], "fontSize": "13px", "marginBottom": "16px",
+                    "color": COLORS["text_muted"], "fontSize": "13px", "marginBottom": "18px",
                 }),
                 html.Div(id="metrics-table", style={"overflowX": "auto", "maxHeight": "500px", "overflowY": "auto"}),
             ]),
 
             # FOOTER
-            html.Div(style={"textAlign": "center", "padding": "20px 0", "borderTop": f"1px solid {COLORS['card_border']}"}, children=[
-                html.P("Sales Forecast Dashboard - Powered by Plotly Dash", style={
+            html.Div(style={"textAlign": "center", "padding": "28px 0 20px",
+                            "borderTop": f"1px solid {COLORS['card_border']}", "marginTop": "12px"}, children=[
+                html.P("TCCHE", style={
+                    "color": COLORS["accent"], "fontSize": "11px", "margin": "0 0 6px",
+                    "letterSpacing": "3px", "fontWeight": "600",
+                }),
+                html.P("Sales Forecast Dashboard", style={
                     "color": COLORS["text_muted"], "fontSize": "12px", "margin": "0",
                 }),
             ]),
@@ -748,8 +792,8 @@ def update_daily_report(tab_value):
     # Recent sales columns (last 7 days)
     for d in recent_dates:
         day_label = d.strftime("%m/%d")
-        header_cells.append(html.Th(day_label, style={**th_style, "backgroundColor": "#1a2332"}))
-    header_cells.append(html.Th("Total 7d", style={**th_style, "backgroundColor": "#1a2332"}))
+        header_cells.append(html.Th(day_label, style={**th_style, "backgroundColor": "#16162a"}))
+    header_cells.append(html.Th("Total 7d", style={**th_style, "backgroundColor": "#16162a"}))
 
     # Visual separator
     header_cells.append(html.Th("", style={**th_style, "width": "4px", "padding": "0",
@@ -758,23 +802,23 @@ def update_daily_report(tab_value):
     # Forecast columns (next 7 days)
     for d in forecast_dates:
         day_label = d.strftime("%m/%d")
-        header_cells.append(html.Th(day_label, style={**th_style, "backgroundColor": "#2a1f14"}))
-    header_cells.append(html.Th("Total 7d", style={**th_style, "backgroundColor": "#2a1f14"}))
+        header_cells.append(html.Th(day_label, style={**th_style, "backgroundColor": "#1e1812"}))
+    header_cells.append(html.Th("Total 7d", style={**th_style, "backgroundColor": "#1e1812"}))
 
     # Sub-header (section labels)
     sub_cells = [html.Th("", style={**th_style, "borderBottom": f"1px solid {COLORS['card_border']}"})]
     for _ in recent_dates:
         sub_cells.append(html.Th("", style={**th_style, "borderBottom": f"1px solid {COLORS['card_border']}",
-                                             "backgroundColor": "#1a2332"}))
+                                             "backgroundColor": "#16162a"}))
     sub_cells.append(html.Th("", style={**th_style, "borderBottom": f"1px solid {COLORS['card_border']}",
-                                         "backgroundColor": "#1a2332"}))
+                                         "backgroundColor": "#16162a"}))
     sub_cells.append(html.Th("", style={**th_style, "width": "4px", "padding": "0",
                                          "backgroundColor": COLORS["accent"], "minWidth": "4px"}))
     for _ in forecast_dates:
         sub_cells.append(html.Th("", style={**th_style, "borderBottom": f"1px solid {COLORS['card_border']}",
-                                             "backgroundColor": "#2a1f14"}))
+                                             "backgroundColor": "#1e1812"}))
     sub_cells.append(html.Th("", style={**th_style, "borderBottom": f"1px solid {COLORS['card_border']}",
-                                         "backgroundColor": "#2a1f14"}))
+                                         "backgroundColor": "#1e1812"}))
 
     # Group title row
     n_recent = len(recent_dates) + 1  # +1 para total
@@ -783,12 +827,12 @@ def update_daily_report(tab_value):
         html.Th("", style={**th_style, "borderBottom": "none"}),
         html.Th("RECENT SALES", colSpan=n_recent,
                 style={**th_style, "borderBottom": "none", "color": COLORS["accent"],
-                       "fontSize": "11px", "backgroundColor": "#1a2332"}),
+                       "fontSize": "11px", "backgroundColor": "#16162a", "letterSpacing": "1.5px"}),
         html.Th("", style={**th_style, "width": "4px", "padding": "0", "borderBottom": "none",
                             "backgroundColor": COLORS["accent"], "minWidth": "4px"}),
         html.Th("FORECAST", colSpan=n_forecast,
-                style={**th_style, "borderBottom": "none", "color": COLORS["accent2"],
-                       "fontSize": "11px", "backgroundColor": "#2a1f14"}),
+                style={**th_style, "borderBottom": "none", "color": COLORS["accent4"],
+                       "fontSize": "11px", "backgroundColor": "#1e1812", "letterSpacing": "1.5px"}),
     ])
 
     # Rows
@@ -803,10 +847,10 @@ def update_daily_report(tab_value):
         # Recent sales
         for d in recent_dates:
             val = r["recent_sales"].get(d, 0)
-            bg = "#1a2332"
+            bg = "#16162a"
             if val > 0:
                 intensity = min(val / 5, 1)
-                bg = f"rgba(88, 166, 255, {0.08 + intensity * 0.2})"
+                bg = f"rgba(200, 164, 78, {0.06 + intensity * 0.18})"
             cells.append(html.Td(
                 str(val) if val > 0 else "-",
                 style={**td_style, "backgroundColor": bg,
@@ -820,7 +864,7 @@ def update_daily_report(tab_value):
             str(tr) if tr > 0 else "-",
             style={**td_style, "fontWeight": "700",
                    "color": COLORS["accent"] if tr > 0 else COLORS["text_muted"],
-                   "backgroundColor": "#1a2332"},
+                   "backgroundColor": "#16162a"},
         ))
 
         # Separator
@@ -830,14 +874,14 @@ def update_daily_report(tab_value):
         # Forecast
         for d in forecast_dates:
             val = r["forecast"].get(d, 0)
-            bg = "#2a1f14"
+            bg = "#1e1812"
             if val > 0.1:
                 intensity = min(val / 5, 1)
-                bg = f"rgba(249, 115, 22, {0.08 + intensity * 0.2})"
+                bg = f"rgba(184, 115, 72, {0.06 + intensity * 0.18})"
             cells.append(html.Td(
                 f"{val:.1f}" if val > 0.05 else "-",
                 style={**td_style, "backgroundColor": bg,
-                       "color": COLORS["accent2"] if val > 0.05 else COLORS["text_muted"],
+                       "color": COLORS["accent4"] if val > 0.05 else COLORS["text_muted"],
                        "fontWeight": "600" if val > 0.05 else "400"},
             ))
 
@@ -846,8 +890,8 @@ def update_daily_report(tab_value):
         cells.append(html.Td(
             f"{tp:.1f}" if tp > 0.05 else "-",
             style={**td_style, "fontWeight": "700",
-                   "color": COLORS["accent2"] if tp > 0.05 else COLORS["text_muted"],
-                   "backgroundColor": "#2a1f14"},
+                   "color": COLORS["accent4"] if tp > 0.05 else COLORS["text_muted"],
+                   "backgroundColor": "#1e1812"},
         ))
 
         body_rows.append(html.Tr(cells))
@@ -1006,6 +1050,7 @@ def update_top_products(selected_cats, tab_value):
         x=filtered["quantity_sold"], y=filtered["product_name"],
         orientation="h",
         marker_color=COLORS["accent"],
+        marker_line_width=0,
         texttemplate="%{x:.0f}", textposition="outside", textfont_size=11,
     ))
 
@@ -1034,17 +1079,17 @@ def update_product_forecast(product_id):
     h = hist_df[hist_df["product_id"] == pid].sort_values("order_date")
     p = pred_df[pred_df["product_id"] == pid].sort_values("order_date")
 
-    # --- Linha REAL (azul) - todo o historico diario ---
+    # --- Linha REAL (gold) - todo o historico diario ---
     if not h.empty:
         h_agg = h.groupby("order_date")["quantity_sold"].sum().reset_index()
 
         fig.add_trace(go.Scatter(
             x=h_agg["order_date"], y=h_agg["quantity_sold"],
             mode="lines", name="actual",
-            line=dict(color="#4A90D9", width=1.5),
+            line=dict(color=COLORS["accent"], width=1.5),
         ))
 
-    # --- Linha PREDICT (laranja) + intervalo de confianca ---
+    # --- Linha PREDICT (copper) + intervalo de confianca ---
     if not p.empty:
         # Conectar com o ultimo ponto do historico para continuidade visual
         if not h.empty:
@@ -1065,7 +1110,7 @@ def update_product_forecast(product_id):
                 x=pd.concat([p["order_date"], p["order_date"][::-1]]),
                 y=pd.concat([p["yhat_upper"], p["yhat_lower"][::-1]]),
                 fill="toself",
-                fillcolor="rgba(245, 166, 35, 0.15)",
+                fillcolor="rgba(184, 115, 72, 0.15)",
                 line=dict(color="rgba(0,0,0,0)"),
                 name="80% interval",
                 showlegend=True,
@@ -1075,7 +1120,7 @@ def update_product_forecast(product_id):
         fig.add_trace(go.Scatter(
             x=p_plot["order_date"], y=p_plot["predicted_quantity"],
             mode="lines", name="forecast",
-            line=dict(color="#F5A623", width=2),
+            line=dict(color=COLORS["accent4"], width=2),
         ))
 
     fig.update_layout(**PLOT_LAYOUT)
@@ -1136,7 +1181,7 @@ def update_weekday_chart(selected_cats, tab_value):
     wd = filtered.groupby("weekday")["quantity_sold"].sum().reset_index()
     wd["weekday_name"] = wd["weekday"].map(lambda x: weekday_names[x])
 
-    colors = [COLORS["accent4"] if x >= 5 else COLORS["accent"] for x in wd["weekday"]]
+    colors = [COLORS["accent3"] if x >= 5 else COLORS["accent"] for x in wd["weekday"]]
 
     fig.add_trace(go.Bar(
         x=wd["weekday_name"], y=wd["quantity_sold"],
@@ -1244,11 +1289,11 @@ def update_metrics_table(selected_cats, tab_value):
 
         row_cells = [
             html.Td(name, style=cell_style),
-            html.Td(cat_display, style={**cell_style, "color": COLORS["accent4"], "fontSize": "12px"}),
+            html.Td(cat_display, style={**cell_style, "color": COLORS["accent3"], "fontSize": "12px"}),
             html.Td(f"{row['mae']:.2f}", style={**cell_style, "textAlign": "right"}),
             html.Td(f"{row['rmse']:.2f}", style={**cell_style, "textAlign": "right"}),
             html.Td(f"{row['r2_score']:.3f}", style={**cell_style, "textAlign": "right", "color": r2_color(row["r2_score"]), "fontWeight": "600"}),
-            html.Td(f"{row['total_prev']:.1f}", style={**cell_style, "textAlign": "right", "color": COLORS["accent2"], "fontWeight": "600"}),
+            html.Td(f"{row['total_prev']:.1f}", style={**cell_style, "textAlign": "right", "color": COLORS["accent4"], "fontWeight": "600"}),
             html.Td(f"{row['media_dia']:.2f}", style={**cell_style, "textAlign": "right"}),
         ]
         if has_method:
@@ -1282,9 +1327,9 @@ def _make_message_bubble(role, content):
             html.Div(
                 "You" if is_user else "AI",
                 style={
-                    "backgroundColor": COLORS["accent"] if is_user else COLORS["accent4"],
-                    "color": "#fff", "borderRadius": "50%",
-                    "width": "28px", "height": "28px",
+                    "backgroundColor": COLORS["accent3"] if is_user else COLORS["accent"],
+                    "color": COLORS["bg"], "borderRadius": "50%",
+                    "width": "30px", "height": "30px",
                     "display": "flex", "alignItems": "center", "justifyContent": "center",
                     "fontSize": "10px", "fontWeight": "700", "flexShrink": "0",
                 },
@@ -1292,7 +1337,7 @@ def _make_message_bubble(role, content):
             # Message content
             html.Div(
                 style={
-                    "backgroundColor": "rgba(88,166,255,0.08)" if is_user else "transparent",
+                    "backgroundColor": "rgba(90,170,136,0.08)" if is_user else "transparent",
                     "borderRadius": "10px", "padding": "10px 14px" if is_user else "0",
                     "maxWidth": "85%",
                 },
@@ -1301,7 +1346,7 @@ def _make_message_bubble(role, content):
                         content,
                         style={
                             "color": COLORS["text"], "fontSize": "13px",
-                            "margin": "0", "lineHeight": "1.6",
+                            "margin": "0", "lineHeight": "1.7",
                         },
                     ),
                 ],
@@ -1339,8 +1384,8 @@ def handle_chat(send_clicks, n_submit, daily_clicks, weekly_clicks,
             style={"display": "flex", "gap": "10px", "alignItems": "flex-start"},
             children=[
                 html.Div("AI", style={
-                    "backgroundColor": COLORS["accent4"], "color": "#fff",
-                    "borderRadius": "50%", "width": "28px", "height": "28px",
+                    "backgroundColor": COLORS["accent"], "color": COLORS["bg"],
+                    "borderRadius": "50%", "width": "30px", "height": "30px",
                     "display": "flex", "alignItems": "center", "justifyContent": "center",
                     "fontSize": "11px", "fontWeight": "700", "flexShrink": "0",
                 }),
