@@ -533,7 +533,7 @@ def update_product_forecast(product_id):
             line=dict(color="#4A90D9", width=1.5),
         ))
 
-    # --- Linha PREDICT (laranja) - previsao futura ---
+    # --- Linha PREDICT (laranja) + intervalo de confianca ---
     if not p.empty:
         # Conectar com o ultimo ponto do historico para continuidade visual
         if not h.empty:
@@ -546,6 +546,20 @@ def update_product_forecast(product_id):
             p_plot = pd.concat([bridge, p[["order_date", "predicted_quantity"]]], ignore_index=True)
         else:
             p_plot = p
+
+        # Intervalo de confianca (faixa sombreada) se disponivel
+        has_ci = "yhat_lower" in p.columns and "yhat_upper" in p.columns
+        if has_ci:
+            fig.add_trace(go.Scatter(
+                x=pd.concat([p["order_date"], p["order_date"][::-1]]),
+                y=pd.concat([p["yhat_upper"], p["yhat_lower"][::-1]]),
+                fill="toself",
+                fillcolor="rgba(245, 166, 35, 0.15)",
+                line=dict(color="rgba(0,0,0,0)"),
+                name="intervalo 80%",
+                showlegend=True,
+                hoverinfo="skip",
+            ))
 
         fig.add_trace(go.Scatter(
             x=p_plot["order_date"], y=p_plot["predicted_quantity"],
