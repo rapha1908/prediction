@@ -598,10 +598,10 @@ app.layout = html.Div(
                 html.Div(id="daily-report", style={"overflowX": "auto", "maxHeight": "600px", "overflowY": "auto"}),
             ]),
 
-            # ============ FILTRO DE CATEGORIAS ============
+            # ============ FILTROS ============
             html.Div(style=card_style({"marginBottom": "28px"}), children=[
                 section_label("FILTERS"),
-                html.H3("Filter by Category", style={
+                html.H3("Filter by Category & Currency", style={
                     "margin": "0 0 14px", "fontSize": "18px", "fontWeight": "700",
                 }),
                 html.Div(style={"display": "flex", "gap": "16px", "alignItems": "center", "flexWrap": "wrap"}, children=[
@@ -613,6 +613,17 @@ app.layout = html.Div(
                             value=[],
                             multi=True,
                             placeholder="Select categories...",
+                            style=dropdown_style,
+                        ),
+                    ]),
+                    html.Div(style={"minWidth": "180px"}, children=[
+                        html.Label("Currency:", style={"fontSize": "13px", "color": COLORS["text_muted"], "marginBottom": "4px", "display": "block"}),
+                        dcc.Dropdown(
+                            id="currency-filter",
+                            options=[],
+                            value=[],
+                            multi=True,
+                            placeholder="All currencies",
                             style=dropdown_style,
                         ),
                     ]),
@@ -735,31 +746,51 @@ def filter_by_event_tab(df, tab_value):
     return df[df["product_id"].isin(pids)]
 
 
-# --- Update categories based on tab ---
+def filter_by_currency(df, selected_currencies):
+    """Filter DataFrame by selected currencies. If empty list, no filter applied."""
+    if not selected_currencies or "currency" not in df.columns:
+        return df
+    return df[df["currency"].isin(selected_currencies)]
+
+
+# --- Update categories and currency options based on tab ---
 @callback(
     Output("category-filter", "options"),
     Output("category-filter", "value"),
+    Output("currency-filter", "options"),
+    Output("currency-filter", "value"),
     Input("event-tabs", "value"),
 )
-def update_category_filter(tab_value):
+def update_filters(tab_value):
     filtered = filter_by_event_tab(hist_df, tab_value)
     if filtered.empty:
-        return [], []
+        return [], [], [], []
+
+    # Categories
     cats = sorted(set(
         cat
         for cats_str in filtered["category"].dropna().unique()
         for cat in parse_categories(cats_str)
     ))
-    return [{"label": c, "value": c} for c in cats], cats
+    cat_options = [{"label": c, "value": c} for c in cats]
+
+    # Currencies
+    currencies = sorted(filtered["currency"].dropna().unique()) if "currency" in filtered.columns else []
+    cur_options = [{"label": f"{currency_symbol(c)} ({c})", "value": c} for c in currencies]
+    # Default: select all currencies
+    cur_value = currencies
+
+    return cat_options, cats, cur_options, cur_value
 
 
 # --- Dynamic KPIs ---
 @callback(
     Output("kpi-container", "children"),
     Input("event-tabs", "value"),
+    Input("currency-filter", "value"),
 )
-def update_kpis(tab_value):
-    fh = filter_by_event_tab(hist_df, tab_value)
+def update_kpis(tab_value, selected_currencies):
+    fh = filter_by_currency(filter_by_event_tab(hist_df, tab_value), selected_currencies)
     fp = filter_by_event_tab(pred_df, tab_value)
 
     n_products = fh["product_id"].nunique() if not fh.empty else 0
@@ -811,10 +842,15 @@ def update_kpis(tab_value):
 @callback(
     Output("daily-report", "children"),
     Input("event-tabs", "value"),
+    Input("currency-filter", "value"),
 )
-def update_daily_report(tab_value):
-    fh = filter_by_event_tab(hist_df, tab_value)
+def update_daily_report(tab_value, selected_currencies):
+    fh = filter_by_currency(filter_by_event_tab(hist_df, tab_value), selected_currencies)
     fp = filter_by_event_tab(pred_df, tab_value)
+    # Filter predictions to only show products with sales in selected currencies
+    if selected_currencies and not fh.empty:
+        valid_pids = set(fh["product_id"].unique())
+        fp = fp[fp["product_id"].isin(valid_pids)] if not fp.empty else fp
 
     if fh.empty and fp.empty:
         return html.P("No products found.", style={"color": COLORS["text_muted"]})
@@ -1004,18 +1040,24 @@ def update_daily_report(tab_value):
     )
 
 
-# --- Update product dropdown based on categories and tab ---
+# --- Update product dropdown based on categories, tab, and currency ---
 @callback(
     Output("product-selector", "options"),
     Output("product-selector", "value"),
     Input("category-filter", "value"),
     Input("event-tabs", "value"),
+    Input("currency-filter", "value"),
 )
-def update_product_options(selected_cats, tab_value):
+def update_product_options(selected_cats, tab_value, selected_currencies):
     if not selected_cats:
         return [], None
+    # Find products that have sales in the selected currencies
+    fh = filter_by_currency(filter_by_event_tab(hist_df, tab_value), selected_currencies)
+    valid_pids = set(fh["product_id"].unique()) if not fh.empty else set()
     filtered = filter_by_categories(product_sales, selected_cats, product_cat_map)
     filtered = filter_by_event_tab(filtered, tab_value)
+    if selected_currencies:
+        filtered = filtered[filtered["product_id"].isin(valid_pids)]
     options = [
         {"label": f"{r['product_name']}  ({int(r['quantity_sold'])} sold)",
          "value": str(r["product_id"])}
@@ -1031,15 +1073,16 @@ def update_product_options(selected_cats, tab_value):
     Input("category-filter", "value"),
     Input("time-granularity", "value"),
     Input("event-tabs", "value"),
+    Input("currency-filter", "value"),
 )
-def update_category_timeline(selected_cats, granularity, tab_value):
+def update_category_timeline(selected_cats, granularity, tab_value, selected_currencies):
     fig = go.Figure()
     if not selected_cats:
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
-    # Filtrar por tab
-    filtered_hist = filter_by_event_tab(hist_df, tab_value)
+    # Filtrar por tab e moeda
+    filtered_hist = filter_by_currency(filter_by_event_tab(hist_df, tab_value), selected_currencies)
 
     # Explodir categorias para agrupar corretamente por categoria individual
     exploded = explode_categories(filtered_hist)
@@ -1078,15 +1121,16 @@ def update_category_timeline(selected_cats, granularity, tab_value):
     Output("category-forecast", "figure"),
     Input("category-filter", "value"),
     Input("event-tabs", "value"),
+    Input("currency-filter", "value"),
 )
-def update_category_forecast(selected_cats, tab_value):
+def update_category_forecast(selected_cats, tab_value, selected_currencies):
     fig = go.Figure()
     if not selected_cats:
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
-    # Filtrar por tab
-    filtered_hist = filter_by_event_tab(hist_df, tab_value)
+    # Filtrar por tab e moeda
+    filtered_hist = filter_by_currency(filter_by_event_tab(hist_df, tab_value), selected_currencies)
     filtered_pred = filter_by_event_tab(pred_df, tab_value)
 
     # Explodir historico e previsao
@@ -1137,15 +1181,21 @@ def update_category_forecast(selected_cats, tab_value):
     Output("top-products-chart", "figure"),
     Input("category-filter", "value"),
     Input("event-tabs", "value"),
+    Input("currency-filter", "value"),
 )
-def update_top_products(selected_cats, tab_value):
+def update_top_products(selected_cats, tab_value, selected_currencies):
     fig = go.Figure()
     if not selected_cats:
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
+    # Filter product_sales by products that have sales in selected currencies
+    fh = filter_by_currency(filter_by_event_tab(hist_df, tab_value), selected_currencies)
+    valid_pids = set(fh["product_id"].unique()) if not fh.empty else set()
     filtered = filter_by_categories(product_sales, selected_cats, product_cat_map)
     filtered = filter_by_event_tab(filtered, tab_value)
+    if selected_currencies:
+        filtered = filtered[filtered["product_id"].isin(valid_pids)]
     filtered = filtered.head(15).iloc[::-1]
 
     fig.add_trace(go.Bar(
@@ -1243,14 +1293,15 @@ def update_product_forecast(product_id):
     Output("monthly-revenue", "figure"),
     Input("category-filter", "value"),
     Input("event-tabs", "value"),
+    Input("currency-filter", "value"),
 )
-def update_monthly_revenue(selected_cats, tab_value):
+def update_monthly_revenue(selected_cats, tab_value, selected_currencies):
     fig = go.Figure()
     if not selected_cats:
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
-    filtered = filter_by_categories(hist_df, selected_cats, product_cat_map).copy()
+    filtered = filter_by_currency(filter_by_categories(hist_df, selected_cats, product_cat_map), selected_currencies).copy()
     filtered = filter_by_event_tab(filtered, tab_value)
     filtered["month"] = filtered["order_date"].dt.to_period("M").apply(lambda r: r.start_time)
 
@@ -1292,15 +1343,16 @@ def update_monthly_revenue(selected_cats, tab_value):
     Output("weekday-chart", "figure"),
     Input("category-filter", "value"),
     Input("event-tabs", "value"),
+    Input("currency-filter", "value"),
 )
-def update_weekday_chart(selected_cats, tab_value):
+def update_weekday_chart(selected_cats, tab_value, selected_currencies):
     fig = go.Figure()
     if not selected_cats:
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
     weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    filtered = filter_by_categories(hist_df, selected_cats, product_cat_map).copy()
+    filtered = filter_by_currency(filter_by_categories(hist_df, selected_cats, product_cat_map), selected_currencies).copy()
     filtered = filter_by_event_tab(filtered, tab_value)
     filtered["weekday"] = filtered["order_date"].dt.dayofweek
     wd = filtered.groupby("weekday")["quantity_sold"].sum().reset_index()
@@ -1322,14 +1374,20 @@ def update_weekday_chart(selected_cats, tab_value):
     Output("metrics-table", "children"),
     Input("category-filter", "value"),
     Input("event-tabs", "value"),
+    Input("currency-filter", "value"),
 )
-def update_metrics_table(selected_cats, tab_value):
+def update_metrics_table(selected_cats, tab_value, selected_currencies):
     if not selected_cats:
         return html.P("Select at least one category.", style={"color": COLORS["text_muted"]})
 
     # Filtrar metricas por categorias (multi-categoria)
     filtered_metrics = filter_by_categories(metrics_df, selected_cats, product_cat_map)
     filtered_metrics = filter_by_event_tab(filtered_metrics, tab_value)
+    # Filter by currency: keep only products that have sales in selected currencies
+    if selected_currencies:
+        fh = filter_by_currency(filter_by_event_tab(hist_df, tab_value), selected_currencies)
+        valid_pids = set(fh["product_id"].unique()) if not fh.empty else set()
+        filtered_metrics = filtered_metrics[filtered_metrics["product_id"].isin(valid_pids)]
 
     if filtered_metrics.empty:
         return html.P("No products found in selected categories.", style={"color": COLORS["text_muted"]})
