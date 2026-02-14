@@ -295,29 +295,25 @@ app.layout = html.Div(
                 dcc.Graph(id="category-forecast", config={"displayModeBar": False}),
             ]),
 
-            # ============ GRID: TOP PRODUTOS + PRODUTO INDIVIDUAL ============
-            html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "24px", "marginBottom": "28px"}, children=[
+            # ============ PREVISAO INDIVIDUAL POR PRODUTO (largura total) ============
+            html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                html.H3("Real vs Previsao por Produto", style={
+                    "margin": "0 0 12px", "fontSize": "16px", "fontWeight": "600",
+                }),
+                dcc.Dropdown(
+                    id="product-selector",
+                    placeholder="Selecione um produto...",
+                    style={**dropdown_style, "marginBottom": "16px"},
+                ),
+                dcc.Graph(id="product-forecast", style={"height": "420px"}, config={"displayModeBar": False}),
+            ]),
 
-                # Top produtos nas categorias selecionadas
-                html.Div(style=card_style(), children=[
-                    html.H3("Top 15 Produtos (Categorias Selecionadas)", style={
-                        "margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600",
-                    }),
-                    dcc.Graph(id="top-products-chart", config={"displayModeBar": False}),
-                ]),
-
-                # Previsao individual por produto
-                html.Div(style=card_style(), children=[
-                    html.H3("Historico + Previsao por Produto", style={
-                        "margin": "0 0 12px", "fontSize": "16px", "fontWeight": "600",
-                    }),
-                    dcc.Dropdown(
-                        id="product-selector",
-                        placeholder="Selecione um produto...",
-                        style={**dropdown_style, "marginBottom": "12px"},
-                    ),
-                    dcc.Graph(id="product-forecast", config={"displayModeBar": False}),
-                ]),
+            # ============ TOP PRODUTOS ============
+            html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                html.H3("Top 15 Produtos (Categorias Selecionadas)", style={
+                    "margin": "0 0 16px", "fontSize": "16px", "fontWeight": "600",
+                }),
+                dcc.Graph(id="top-products-chart", config={"displayModeBar": False}),
             ]),
 
             # ============ GRID: RECEITA + DIA DA SEMANA ============
@@ -527,42 +523,45 @@ def update_product_forecast(product_id):
     h = hist_df[hist_df["product_id"] == pid].sort_values("order_date")
     p = pred_df[pred_df["product_id"] == pid].sort_values("order_date")
 
+    # --- Linha REAL (azul) - todo o historico diario ---
     if not h.empty:
         h_agg = h.groupby("order_date")["quantity_sold"].sum().reset_index()
-        h_agg["rolling_7d"] = h_agg["quantity_sold"].rolling(7, min_periods=1).mean()
 
         fig.add_trace(go.Scatter(
             x=h_agg["order_date"], y=h_agg["quantity_sold"],
-            mode="lines", name="Vendas Diarias",
-            line=dict(color=COLORS["accent"], width=1), opacity=0.4,
-        ))
-        fig.add_trace(go.Scatter(
-            x=h_agg["order_date"], y=h_agg["rolling_7d"],
-            mode="lines", name="Media Movel 7d",
-            line=dict(color=COLORS["accent"], width=2.5),
+            mode="lines", name="real",
+            line=dict(color="#4A90D9", width=1.5),
         ))
 
-        # Linha vertical separando historico de previsao
-        last_date = h_agg["order_date"].max()
-        y_max = max(h_agg["quantity_sold"].max(), 1)
-        fig.add_trace(go.Scatter(
-            x=[last_date, last_date], y=[0, y_max],
-            mode="lines", name="Inicio Previsao",
-            line=dict(color=COLORS["text_muted"], width=1.5, dash="dot"),
-        ))
-
+    # --- Linha PREDICT (laranja) - previsao futura ---
     if not p.empty:
+        # Conectar com o ultimo ponto do historico para continuidade visual
+        if not h.empty:
+            last_hist_date = h_agg["order_date"].iloc[-1]
+            last_hist_val = h_agg["quantity_sold"].iloc[-1]
+            bridge = pd.DataFrame({
+                "order_date": [last_hist_date],
+                "predicted_quantity": [float(last_hist_val)],
+            })
+            p_plot = pd.concat([bridge, p[["order_date", "predicted_quantity"]]], ignore_index=True)
+        else:
+            p_plot = p
+
         fig.add_trace(go.Scatter(
-            x=p["order_date"], y=p["predicted_quantity"],
-            mode="lines+markers", name="Previsao",
-            line=dict(color=COLORS["accent2"], width=2.5, dash="dash"),
-            marker=dict(size=4),
+            x=p_plot["order_date"], y=p_plot["predicted_quantity"],
+            mode="lines", name="predict",
+            line=dict(color="#F5A623", width=2),
         ))
 
     fig.update_layout(**PLOT_LAYOUT)
     fig.update_layout(
-        xaxis_title="Data", yaxis_title="Quantidade",
-        legend=H_LEGEND,
+        xaxis_title="", yaxis_title="",
+        legend=dict(
+            orientation="h", yanchor="top", y=1.08,
+            xanchor="right", x=1, bgcolor="rgba(0,0,0,0)",
+            font=dict(size=13),
+        ),
+        margin=dict(l=50, r=20, t=40, b=40),
     )
     return fig
 
