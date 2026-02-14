@@ -157,10 +157,23 @@ product_cat_map = build_product_cat_map(hist_df)
 TODAY = pd.Timestamp.now().normalize()
 
 
+ONLINE_COURSE_CATS = {"ONLINE COURSE"}
+
+
+def _is_online_course(pid):
+    """Check if a product belongs to the ONLINE COURSE category."""
+    rows = hist_df[hist_df["product_id"] == pid]
+    if rows.empty:
+        return False
+    cats = set(parse_categories(rows["category"].iloc[0]))
+    return bool(cats & ONLINE_COURSE_CATS)
+
+
 def build_event_status_map():
     """
-    Create map product_id -> 'active' or 'past' based on ticket_end_date.
-    Uses all available DataFrames to find the date for each product.
+    Create map product_id -> 'active', 'past', or 'course' based on
+    ticket_end_date and category.
+    Products in the ONLINE COURSE category are always classified as 'course'.
     """
     # First, collect the most reliable ticket_end_date for each product_id
     # Priority: hist > pred > metrics (hist has more products)
@@ -173,14 +186,23 @@ def build_event_status_map():
             if not end_vals.empty:
                 date_by_pid[pid] = end_vals.iloc[0]
 
-    # Classify each product in 2 passes
+    # Classify each product
     status_map = {}
     no_date_pids = set()
     all_pids = set(hist_df["product_id"].unique())
     all_pids |= set(pred_df["product_id"].unique()) if "product_id" in pred_df.columns else set()
 
-    # --- Pass 1: products WITH ticket_end_date ---
+    # --- Pass 0: Online Courses go to their own tab ---
+    course_pids = set()
     for pid in all_pids:
+        if _is_online_course(pid):
+            status_map[pid] = "course"
+            course_pids.add(pid)
+
+    remaining_pids = all_pids - course_pids
+
+    # --- Pass 1: products WITH ticket_end_date ---
+    for pid in remaining_pids:
         if pid in date_by_pid and pd.notna(date_by_pid[pid]):
             status_map[pid] = "active" if date_by_pid[pid] >= TODAY else "past"
         else:
@@ -195,6 +217,8 @@ def build_event_status_map():
     # Category map -> has active product? (using pass 1 only)
     cat_has_active = {}
     for pid_val, st in status_map.items():
+        if st == "course":
+            continue
         rows = hist_df[hist_df["product_id"] == pid_val]
         if rows.empty:
             continue
@@ -226,7 +250,8 @@ def build_event_status_map():
 event_status_map = build_event_status_map()
 n_active = sum(1 for v in event_status_map.values() if v == "active")
 n_past = sum(1 for v in event_status_map.values() if v == "past")
-print(f"  Events: {n_active} active, {n_past} past")
+n_courses = sum(1 for v in event_status_map.values() if v == "course")
+print(f"  Events: {n_active} active, {n_past} past, {n_courses} online courses")
 
 # Unique categories (expanded from pipe-separated)
 all_categories = sorted(set(
@@ -545,6 +570,19 @@ app.layout = html.Div(
                                         "fontFamily": FONT, "fontSize": "13px", "fontWeight": "700",
                                         "letterSpacing": "0.5px", "textTransform": "uppercase"},
                     ),
+                    dcc.Tab(
+                        label=f"Online Courses ({n_courses})",
+                        value="course",
+                        style={"backgroundColor": COLORS["bg"], "color": COLORS["text_muted"],
+                               "border": f"1px solid {COLORS['card_border']}", "borderRadius": "8px 8px 0 0",
+                               "padding": "12px 28px", "fontFamily": FONT, "fontSize": "13px", "fontWeight": "500",
+                               "letterSpacing": "0.5px", "textTransform": "uppercase"},
+                        selected_style={"backgroundColor": COLORS["card"], "color": COLORS["accent3"],
+                                        "border": f"1px solid {COLORS['card_border']}", "borderBottom": "none",
+                                        "borderRadius": "8px 8px 0 0", "padding": "12px 28px",
+                                        "fontFamily": FONT, "fontSize": "13px", "fontWeight": "700",
+                                        "letterSpacing": "0.5px", "textTransform": "uppercase"},
+                    ),
                 ],
             ),
 
@@ -690,13 +728,10 @@ app.layout = html.Div(
 # ============================================================
 
 def filter_by_event_tab(df, tab_value):
-    """Filter DataFrame by event status (active/past) based on the tab."""
+    """Filter DataFrame by event status (active/past/course) based on the tab."""
     if "product_id" not in df.columns:
         return df
-    if tab_value == "active":
-        pids = {pid for pid, st in event_status_map.items() if st == "active"}
-    else:
-        pids = {pid for pid, st in event_status_map.items() if st == "past"}
+    pids = {pid for pid, st in event_status_map.items() if st == tab_value}
     return df[df["product_id"].isin(pids)]
 
 
@@ -760,7 +795,8 @@ def update_kpis(tab_value):
     )) if not fh.empty else 0
     pred_total = fp["predicted_quantity"].sum() if not fp.empty else 0
 
-    tab_label = "Active" if tab_value == "active" else "Past"
+    tab_labels = {"active": "Active", "past": "Past", "course": "Online Courses"}
+    tab_label = tab_labels.get(tab_value, tab_value)
 
     return [
         kpi_card("Products", str(n_products), color=COLORS["accent"], subtitle=tab_label),
