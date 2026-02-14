@@ -311,10 +311,17 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
             continue
 
         try:
-            ot = pd.to_datetime(order_date)
-            od = ot.date()
+            od = pd.to_datetime(order_date).date()
         except Exception:
             continue
+
+        # Use date_completed for the full timestamp (has actual hour)
+        # Fall back to date_created if date_completed is missing
+        date_completed = order.get("date_completed") or order_date
+        try:
+            ot = pd.to_datetime(date_completed)
+        except Exception:
+            ot = None
 
         line_items = order.get("line_items", [])
         if not isinstance(line_items, list):
