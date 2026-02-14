@@ -117,20 +117,52 @@ def build_event_status_map():
             if not end_vals.empty:
                 date_by_pid[pid] = end_vals.iloc[0]
 
-    # Classificar cada produto
+    # Classificar cada produto em 2 passes
     status_map = {}
+    no_date_pids = set()
     all_pids = set(hist_df["product_id"].unique())
     all_pids |= set(pred_df["product_id"].unique()) if "product_id" in pred_df.columns else set()
 
+    # --- Passo 1: produtos COM ticket_end_date ---
     for pid in all_pids:
-        if pid in date_by_pid:
-            end_date = date_by_pid[pid]
-            if pd.notna(end_date):
-                status_map[pid] = "active" if end_date >= TODAY else "past"
-            else:
-                status_map[pid] = "active"
+        if pid in date_by_pid and pd.notna(date_by_pid[pid]):
+            status_map[pid] = "active" if date_by_pid[pid] >= TODAY else "past"
         else:
-            status_map[pid] = "active"  # sem data = considerar ativo
+            no_date_pids.add(pid)
+
+    # --- Passo 2: produtos SEM ticket_end_date ---
+    # Inferir status pela categoria: se nenhuma das categorias especificas
+    # deste produto tem produtos ATIVOS (do passo 1), classificar como "past".
+    GENERIC_CATS = {"Sem categoria", "EVENTS", "LIVESTREAM", "ONLINE COURSE",
+                    "THE BREATHWORK REVOLUTION"}
+
+    # Mapa de categoria -> tem produto ativo? (usando apenas passo 1)
+    cat_has_active = {}
+    for pid_val, st in status_map.items():
+        rows = hist_df[hist_df["product_id"] == pid_val]
+        if rows.empty:
+            continue
+        for cat in parse_categories(rows["category"].iloc[0]):
+            if cat not in GENERIC_CATS:
+                if st == "active":
+                    cat_has_active[cat] = True
+                elif cat not in cat_has_active:
+                    cat_has_active[cat] = False
+
+    for pid in no_date_pids:
+        rows = hist_df[hist_df["product_id"] == pid]
+        if rows.empty:
+            status_map[pid] = "past"
+            continue
+
+        # Categorias especificas deste produto
+        product_cats = set(parse_categories(rows["category"].iloc[0])) - GENERIC_CATS
+
+        # Se alguma categoria especifica tem produto ativo -> active
+        if product_cats and any(cat_has_active.get(c, False) for c in product_cats):
+            status_map[pid] = "active"
+        else:
+            status_map[pid] = "past"
 
     return status_map
 
