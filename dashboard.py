@@ -258,10 +258,23 @@ PLOT_LAYOUT = dict(
     hoverlabel=dict(bgcolor=COLORS["card"], bordercolor=COLORS["accent"], font_color=COLORS["text"]),
 )
 
-# Warm palette for chart traces (gold, copper, sage, cream…)
+# High-contrast palette for chart traces – each colour is a distinct hue
 CATEGORY_COLORS = [
-    "#c8a44e", "#b87348", "#5aaa88", "#d4a843", "#8c6d46",
-    "#7eab8e", "#d9c07b", "#a67c52", "#6db89a", "#e0c87a",
+    "#c8a44e",  # Gold (brand)
+    "#e06070",  # Rose / coral red
+    "#4db8c7",  # Teal / cyan
+    "#a668d8",  # Purple / violet
+    "#e0873e",  # Orange
+    "#5aaa88",  # Sage green
+    "#7b8de0",  # Periwinkle blue
+    "#d86890",  # Magenta / pink
+    "#50b560",  # Green
+    "#d4c84e",  # Lime / yellow-green
+    "#c75a5a",  # Brick red
+    "#3daaa0",  # Dark teal
+    "#c07ed4",  # Orchid
+    "#dda04a",  # Amber
+    "#6898d0",  # Steel blue
 ]
 
 
