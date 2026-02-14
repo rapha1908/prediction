@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS orders (
     id              SERIAL PRIMARY KEY,
     order_id        INTEGER NOT NULL,
     order_date      DATE NOT NULL,
+    order_time      TIMESTAMP,
     product_id      INTEGER NOT NULL,
     product_name    TEXT,
     quantity        INTEGER NOT NULL DEFAULT 0,
@@ -158,6 +159,17 @@ BEGIN
         WHERE table_name = 'orders' AND column_name = 'currency'
     ) THEN
         ALTER TABLE orders ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
+    END IF;
+END $$;
+
+-- Add order_time column to orders (if missing)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orders' AND column_name = 'order_time'
+    ) THEN
+        ALTER TABLE orders ADD COLUMN order_time TIMESTAMP;
     END IF;
 END $$;
 
@@ -299,7 +311,8 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
             continue
 
         try:
-            od = pd.to_datetime(order_date).date()
+            ot = pd.to_datetime(order_date)
+            od = ot.date()
         except Exception:
             continue
 
@@ -307,6 +320,8 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
         if not isinstance(line_items, list):
             continue
 
+        # Aggregate line items with same product_id within the same order
+        items_by_pid = {}
         for item in line_items:
             pid = item.get("product_id")
             qty = item.get("quantity", 0)
@@ -316,7 +331,17 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
                 continue
 
             pname = name_map.get(pid, item.get("name", "Desconhecido"))
-            rows.append((order_id, od, pid, pname, qty, total, order_currency, order_status))
+            if pid in items_by_pid:
+                items_by_pid[pid] = (
+                    items_by_pid[pid][0] + qty,
+                    items_by_pid[pid][1] + total,
+                    pname,
+                )
+            else:
+                items_by_pid[pid] = (qty, total, pname)
+
+        for pid, (qty, total, pname) in items_by_pid.items():
+            rows.append((order_id, od, ot, pid, pname, qty, total, order_currency, order_status))
 
     if not rows:
         return 0
@@ -326,11 +351,12 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
     try:
         with conn.cursor() as cur:
             sql = """
-                INSERT INTO orders (order_id, order_date, product_id, product_name,
-                                    quantity, total, currency, order_status)
+                INSERT INTO orders (order_id, order_date, order_time, product_id,
+                                    product_name, quantity, total, currency, order_status)
                 VALUES %s
                 ON CONFLICT (order_id, product_id) DO UPDATE SET
-                    currency = EXCLUDED.currency
+                    currency = EXCLUDED.currency,
+                    order_time = EXCLUDED.order_time
             """
             execute_values(cur, sql, rows, page_size=500)
             inserted = cur.rowcount
@@ -407,6 +433,29 @@ def load_daily_sales() -> pd.DataFrame:
         FROM daily_sales
         ORDER BY order_date
     """, engine, parse_dates=["order_date", "ticket_end_date", "ticket_start_date"])
+    return df
+
+
+def load_hourly_sales() -> pd.DataFrame:
+    """Carrega vendas por hora a partir da tabela orders (usa order_time)."""
+    engine = _get_engine()
+    df = pd.read_sql("""
+        SELECT
+            EXTRACT(HOUR FROM order_time)::int AS hour,
+            o.product_id,
+            COALESCE(p.name, o.product_name) AS product_name,
+            COALESCE(p.category, 'Sem categoria') AS category,
+            p.ticket_end_date,
+            p.ticket_start_date,
+            SUM(o.quantity) AS quantity_sold,
+            SUM(o.total::float) AS revenue,
+            o.currency
+        FROM orders o
+        LEFT JOIN products p ON p.id = o.product_id
+        WHERE o.order_time IS NOT NULL
+        GROUP BY 1, 2, 3, 4, 5, 6, 9
+        ORDER BY 1
+    """, engine, parse_dates=["ticket_end_date", "ticket_start_date"])
     return df
 
 

@@ -369,6 +369,22 @@ def build_data_summary(hist_df, pred_df, metrics_df, rates=None):
                         )
             lines.append("")
 
+    # --- Hourly sales pattern ---
+    try:
+        import db as _db_hourly
+        _hourly = _db_hourly.load_hourly_sales()
+        if not _hourly.empty and "hour" in _hourly.columns:
+            hr_agg = _hourly.groupby("hour")["quantity_sold"].sum().sort_index()
+            if not hr_agg.empty:
+                lines.append("=== SALES BY HOUR OF DAY ===")
+                for h, qty in hr_agg.items():
+                    lines.append(f"  {int(h):02d}:00 - {int(qty)} units")
+                top3 = hr_agg.nlargest(3)
+                lines.append(f"  Best hours: {', '.join(f'{int(h):02d}:00' for h in top3.index)}")
+                lines.append("")
+    except Exception:
+        pass  # hourly data not available
+
     # --- Model metrics ---
     if not metrics_df.empty and "r2_score" in metrics_df.columns:
         avg_r2 = metrics_df["r2_score"].mean()

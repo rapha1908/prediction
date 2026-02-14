@@ -93,6 +93,21 @@ def load_data():
 hist_df, pred_df, metrics_df = load_data()
 
 # ============================================================
+# HOURLY SALES DATA
+# ============================================================
+try:
+    import db as _db_mod
+    hourly_df = _db_mod.load_hourly_sales()
+    print(f"  [OK] Hourly sales loaded: {len(hourly_df)} rows")
+except Exception as _e:
+    print(f"  [WARNING] Could not load hourly sales: {_e}")
+    hourly_df = pd.DataFrame(columns=[
+        "hour", "product_id", "product_name", "category",
+        "ticket_end_date", "ticket_start_date",
+        "quantity_sold", "revenue", "currency",
+    ])
+
+# ============================================================
 # EXCHANGE RATES & REVENUE CONVERSION
 # ============================================================
 
@@ -100,6 +115,8 @@ hist_df, pred_df, metrics_df = load_data()
 _currencies_in_data = list(hist_df["currency"].dropna().unique()) if "currency" in hist_df.columns else []
 exchange_rates = ai_agent.fetch_exchange_rates(_currencies_in_data)
 hist_df = convert_revenue(hist_df, exchange_rates)
+if not hourly_df.empty:
+    hourly_df = convert_revenue(hourly_df, exchange_rates)
 
 print(f"  Display currency: {DISPLAY_CURRENCY}")
 if len(_currencies_in_data) > 1:
@@ -704,6 +721,16 @@ app.layout = html.Div(
                     }),
                     dcc.Graph(id="weekday-chart", config={"displayModeBar": False}),
                 ]),
+
+            ]),
+
+            # ============ BEST HOURS ============
+            html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                section_label("PATTERNS"),
+                html.H3("Best Hours for Sales", style={
+                    "margin": "0 0 18px", "fontSize": "18px", "fontWeight": "700",
+                }),
+                dcc.Graph(id="hourly-chart", config={"displayModeBar": False}),
             ]),
 
             # ============ TABELA DE METRICAS ============
@@ -1366,6 +1393,53 @@ def update_weekday_chart(selected_cats, tab_value, selected_currencies):
     ))
     fig.update_layout(**PLOT_LAYOUT)
     fig.update_layout(xaxis_title="", yaxis_title="Quantity", showlegend=False)
+    return fig
+
+
+# --- Vendas por hora do dia ---
+@callback(
+    Output("hourly-chart", "figure"),
+    Input("category-filter", "value"),
+    Input("event-tabs", "value"),
+    Input("currency-filter", "value"),
+)
+def update_hourly_chart(selected_cats, tab_value, selected_currencies):
+    fig = go.Figure()
+    if not selected_cats or hourly_df.empty:
+        fig.update_layout(**PLOT_LAYOUT)
+        return fig
+
+    filtered = filter_by_currency(
+        filter_by_categories(hourly_df, selected_cats, product_cat_map),
+        selected_currencies,
+    )
+    filtered = filter_by_event_tab(filtered, tab_value)
+
+    if filtered.empty:
+        fig.update_layout(**PLOT_LAYOUT)
+        return fig
+
+    hr = filtered.groupby("hour")["quantity_sold"].sum().reset_index()
+    hr = hr.sort_values("hour")
+
+    # Identify top 3 hours for highlighting
+    top3 = set(hr.nlargest(3, "quantity_sold")["hour"].tolist())
+    colors = [COLORS["accent3"] if h in top3 else COLORS["accent"] for h in hr["hour"]]
+
+    hr["label"] = hr["hour"].apply(lambda h: f"{h:02d}:00")
+
+    fig.add_trace(go.Bar(
+        x=hr["label"], y=hr["quantity_sold"],
+        marker_color=colors, marker_line_width=0,
+        hovertemplate="<b>%{x}</b><br>Qty: %{y}<extra></extra>",
+    ))
+    fig.update_layout(**PLOT_LAYOUT)
+    fig.update_layout(
+        xaxis_title="Hour of Day",
+        yaxis_title="Quantity",
+        showlegend=False,
+        xaxis=dict(dtick=1),
+    )
     return fig
 
 
