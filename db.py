@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS orders (
     product_name    TEXT,
     quantity        INTEGER NOT NULL DEFAULT 0,
     total           NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    currency        TEXT NOT NULL DEFAULT 'USD',
     order_status    TEXT,
     synced_at       TIMESTAMP DEFAULT NOW(),
     UNIQUE (order_id, product_id)
@@ -104,7 +105,8 @@ CREATE TABLE IF NOT EXISTS daily_sales (
     ticket_start_date TIMESTAMP,
     quantity_sold   INTEGER NOT NULL DEFAULT 0,
     revenue         NUMERIC(12, 2) NOT NULL DEFAULT 0,
-    PRIMARY KEY (order_date, product_id)
+    currency        TEXT NOT NULL DEFAULT 'USD',
+    PRIMARY KEY (order_date, product_id, currency)
 );
 
 -- Previsoes geradas (historico completo por run)
@@ -147,12 +149,41 @@ CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON prediction_metrics (run_id);
 """
 
 
+_MIGRATIONS_SQL = """
+-- Add currency column to orders (if missing)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orders' AND column_name = 'currency'
+    ) THEN
+        ALTER TABLE orders ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
+    END IF;
+END $$;
+
+-- Add currency column to daily_sales (if missing)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'daily_sales' AND column_name = 'currency'
+    ) THEN
+        ALTER TABLE daily_sales ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
+        -- Recreate primary key to include currency
+        ALTER TABLE daily_sales DROP CONSTRAINT IF EXISTS daily_sales_pkey;
+        ALTER TABLE daily_sales ADD PRIMARY KEY (order_date, product_id, currency);
+    END IF;
+END $$;
+"""
+
+
 def create_tables():
     """Cria todas as tabelas se nao existirem."""
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
+            cur.execute(_MIGRATIONS_SQL)
         conn.commit()
         print("  [OK] Tabelas do banco de dados verificadas/criadas.")
     finally:
@@ -263,6 +294,7 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
         order_id = order.get("id")
         order_date = order.get("date_created")
         order_status = order.get("status", "")
+        order_currency = order.get("currency", "USD")
         if not order_id or not order_date:
             continue
 
@@ -284,7 +316,7 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
                 continue
 
             pname = name_map.get(pid, item.get("name", "Desconhecido"))
-            rows.append((order_id, od, pid, pname, qty, total, order_status))
+            rows.append((order_id, od, pid, pname, qty, total, order_currency, order_status))
 
     if not rows:
         return 0
@@ -295,9 +327,10 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
         with conn.cursor() as cur:
             sql = """
                 INSERT INTO orders (order_id, order_date, product_id, product_name,
-                                    quantity, total, order_status)
+                                    quantity, total, currency, order_status)
                 VALUES %s
-                ON CONFLICT (order_id, product_id) DO NOTHING
+                ON CONFLICT (order_id, product_id) DO UPDATE SET
+                    currency = EXCLUDED.currency
             """
             execute_values(cur, sql, rows, page_size=500)
             inserted = cur.rowcount
@@ -335,7 +368,8 @@ def refresh_daily_sales():
             cur.execute("""
                 INSERT INTO daily_sales
                     (order_date, product_id, product_name, category,
-                     ticket_end_date, ticket_start_date, quantity_sold, revenue)
+                     ticket_end_date, ticket_start_date, quantity_sold, revenue,
+                     currency)
                 SELECT
                     o.order_date,
                     o.product_id,
@@ -344,13 +378,15 @@ def refresh_daily_sales():
                     p.ticket_end_date,
                     p.ticket_start_date,
                     SUM(o.quantity)                      AS quantity_sold,
-                    SUM(o.total)                         AS revenue
+                    SUM(o.total)                         AS revenue,
+                    o.currency
                 FROM orders o
                 LEFT JOIN products p ON p.id = o.product_id
                 GROUP BY o.order_date, o.product_id,
                          COALESCE(p.name, o.product_name),
                          COALESCE(p.category, 'Sem categoria'),
-                         p.ticket_end_date, p.ticket_start_date
+                         p.ticket_end_date, p.ticket_start_date,
+                         o.currency
                 ORDER BY o.order_date, o.product_id
             """)
             rows = cur.rowcount
@@ -367,7 +403,7 @@ def load_daily_sales() -> pd.DataFrame:
     df = pd.read_sql("""
         SELECT order_date, product_id, product_name, category,
                ticket_end_date, ticket_start_date, quantity_sold,
-               revenue::float AS revenue
+               revenue::float AS revenue, currency
         FROM daily_sales
         ORDER BY order_date
     """, engine, parse_dates=["order_date", "ticket_end_date", "ticket_start_date"])
@@ -495,7 +531,7 @@ def load_for_dashboard(run_id: str | None = None):
     hist_df = pd.read_sql("""
         SELECT order_date, product_id, product_name, category,
                ticket_end_date, ticket_start_date,
-               quantity_sold, revenue::float AS revenue
+               quantity_sold, revenue::float AS revenue, currency
         FROM daily_sales
         ORDER BY order_date
     """, engine, parse_dates=["order_date", "ticket_end_date", "ticket_start_date"])

@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 from dash import Dash, html, dcc, callback, Output, Input, State, no_update
@@ -5,7 +6,17 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 import sys
+from dotenv import load_dotenv
 import agent as ai_agent
+
+load_dotenv()
+
+# Re-use shared currency utilities from agent
+DISPLAY_CURRENCY = ai_agent.DISPLAY_CURRENCY
+currency_symbol = ai_agent._sym
+_format_converted_total = ai_agent._format_converted_total
+convert_revenue = ai_agent.convert_revenue
+
 
 # ============================================================
 # LOAD DATA
@@ -63,6 +74,10 @@ def load_data():
         if "category" not in df.columns:
             df["category"] = "Uncategorized"
 
+    # Ensure currency column exists (backward compatibility with old data)
+    if "currency" not in hist.columns:
+        hist["currency"] = "USD"
+
     # Ensure no duplicate product_id in metrics
     if not metrics.empty and "product_id" in metrics.columns:
         metrics = metrics.drop_duplicates(subset=["product_id"], keep="first")
@@ -76,6 +91,20 @@ def load_data():
 
 
 hist_df, pred_df, metrics_df = load_data()
+
+# ============================================================
+# EXCHANGE RATES & REVENUE CONVERSION
+# ============================================================
+
+# Fetch rates once at startup and add converted revenue column
+_currencies_in_data = list(hist_df["currency"].dropna().unique()) if "currency" in hist_df.columns else []
+exchange_rates = ai_agent.fetch_exchange_rates(_currencies_in_data)
+hist_df = convert_revenue(hist_df, exchange_rates)
+
+print(f"  Display currency: {DISPLAY_CURRENCY}")
+if len(_currencies_in_data) > 1:
+    print(f"  Currencies found: {', '.join(sorted(_currencies_in_data))}")
+
 
 # ============================================================
 # MULTI-CATEGORY HELPERS
@@ -700,7 +729,31 @@ def update_kpis(tab_value):
 
     n_products = fh["product_id"].nunique() if not fh.empty else 0
     n_sales = int(fh["quantity_sold"].sum()) if not fh.empty else 0
-    rev = fh["revenue"].sum() if not fh.empty else 0
+
+    # Revenue: show converted total in display currency
+    sym = currency_symbol(DISPLAY_CURRENCY)
+    if not fh.empty and "revenue_converted" in fh.columns:
+        rev_total = fh["revenue_converted"].sum()
+        rev_display = f"{sym} {rev_total:,.2f}"
+        # Subtitle: show breakdown if multi-currency
+        currencies = sorted(fh["currency"].dropna().unique()) if "currency" in fh.columns else []
+        if len(currencies) > 1:
+            breakdown = []
+            for cur in currencies:
+                cur_total = fh[fh["currency"] == cur]["revenue"].sum()
+                if cur_total > 0:
+                    breakdown.append(f"{currency_symbol(cur)}{cur_total:,.0f}")
+            rev_subtitle = " + ".join(breakdown)
+        else:
+            rev_subtitle = ""
+    elif not fh.empty:
+        rev_total = fh["revenue"].sum()
+        rev_display = f"{sym} {rev_total:,.2f}"
+        rev_subtitle = ""
+    else:
+        rev_display = f"{sym} 0.00"
+        rev_subtitle = ""
+
     n_cats = len(set(
         cat for cats_str in fh["category"].dropna().unique()
         for cat in parse_categories(cats_str)
@@ -712,7 +765,7 @@ def update_kpis(tab_value):
     return [
         kpi_card("Products", str(n_products), color=COLORS["accent"], subtitle=tab_label),
         kpi_card("Total Sales", f"{n_sales:,}".replace(",", "."), color=COLORS["accent3"]),
-        kpi_card("Total Revenue", f"$ {rev:,.2f}", color=COLORS["accent2"]),
+        kpi_card("Total Revenue", rev_display, color=COLORS["accent2"], subtitle=rev_subtitle),
         kpi_card("Categories", str(n_cats), color=COLORS["accent4"]),
         kpi_card("30d Forecast", f"{pred_total:,.0f} units", color=COLORS["accent4"]),
     ]
@@ -1164,14 +1217,37 @@ def update_monthly_revenue(selected_cats, tab_value):
     filtered = filter_by_categories(hist_df, selected_cats, product_cat_map).copy()
     filtered = filter_by_event_tab(filtered, tab_value)
     filtered["month"] = filtered["order_date"].dt.to_period("M").apply(lambda r: r.start_time)
-    monthly = filtered.groupby("month")["revenue"].sum().reset_index()
 
-    fig.add_trace(go.Bar(
-        x=monthly["month"], y=monthly["revenue"],
-        marker_color=COLORS["accent3"], marker_line_width=0, opacity=0.85,
-    ))
+    rev_col = "revenue_converted" if "revenue_converted" in filtered.columns else "revenue"
+    sym = currency_symbol(DISPLAY_CURRENCY)
+
+    # Group by month and currency (stacked to show composition)
+    currencies = sorted(filtered["currency"].dropna().unique()) if "currency" in filtered.columns else [DISPLAY_CURRENCY]
+    multi_currency = len(currencies) > 1
+
+    bar_colors = [COLORS["accent3"], COLORS["accent"], COLORS["accent4"],
+                  COLORS["accent2"], "#7b8de0", "#e06070"]
+
+    for i, cur in enumerate(currencies):
+        cur_data = filtered[filtered["currency"] == cur] if "currency" in filtered.columns else filtered
+        monthly = cur_data.groupby("month")[rev_col].sum().reset_index()
+        if monthly.empty:
+            continue
+        cur_sym = currency_symbol(cur)
+        fig.add_trace(go.Bar(
+            x=monthly["month"], y=monthly[rev_col],
+            name=f"from {cur_sym} ({cur})" if multi_currency else "Revenue",
+            marker_color=bar_colors[i % len(bar_colors)],
+            marker_line_width=0, opacity=0.85,
+        ))
+
     fig.update_layout(**PLOT_LAYOUT)
-    fig.update_layout(xaxis_title="Month", yaxis_title="Revenue ($)", showlegend=False)
+    fig.update_layout(
+        xaxis_title="Month",
+        yaxis_title=f"Revenue ({sym})",
+        showlegend=multi_currency,
+        barmode="stack",
+    )
     return fig
 
 
