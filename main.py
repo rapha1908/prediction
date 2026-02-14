@@ -26,9 +26,13 @@ AUTH_PARAMS = {
 }
 
 # Semanas minimas para usar ML (senao usa media ponderada)
-MIN_WEEKS_ML = 8
+MIN_WEEKS_ML = 12
 # Apenas prever para produtos com vendas nas ultimas N semanas
 ACTIVE_WINDOW_WEEKS = 12
+# Maximo de semanas de gap (inatividade) antes de considerar nova fase
+MAX_GAP_WEEKS = 6
+# Janela maxima de treino (semanas)
+MAX_TRAIN_WINDOW = 52
 
 
 # ============================================================
@@ -300,19 +304,74 @@ FEATURE_COLS = [
 # 5. TREINAMENTO E PREVISÃO
 # ============================================================
 
-def predict_simple_average(product_weekly, pname, cat, pid, forecast_days, today):
+def trim_to_active_phase(product_data):
     """
-    Previsao por media ponderada recente.
-    Usado para produtos com poucas semanas de dados.
+    Remove semanas antigas inativas do inicio dos dados.
+    Detecta a 'fase ativa' atual: o periodo de vendas mais recente,
+    separado por um gap de > MAX_GAP_WEEKS semanas sem vendas.
+    Retorna apenas dados da fase ativa (+ 4 semanas de warmup para lags).
     """
-    recent = product_weekly.tail(4)["quantity_sold"].values
-    if len(recent) == 0 or np.sum(recent) == 0:
+    data = product_data.sort_values("week_start").copy()
+
+    # Indices das semanas com vendas > 0
+    sale_idx = data.index[data["quantity_sold"] > 0].tolist()
+    all_idx = data.index.tolist()
+
+    if len(sale_idx) <= 1:
+        return data.tail(MAX_TRAIN_WINDOW)
+
+    # Percorrer de tras pra frente e encontrar o primeiro gap grande
+    active_start_pos = 0
+    for i in range(len(sale_idx) - 1, 0, -1):
+        pos_current = all_idx.index(sale_idx[i])
+        pos_prev = all_idx.index(sale_idx[i - 1])
+        gap = pos_current - pos_prev
+
+        if gap > MAX_GAP_WEEKS:
+            # Encontrou gap - fase ativa comeca na semana com venda apos o gap
+            # Incluir 4 semanas antes para warmup de lags
+            active_start_pos = max(0, all_idx.index(sale_idx[i]) - 4)
+            break
+
+    trimmed = data.iloc[active_start_pos:]
+
+    # Tambem limitar ao maximo de semanas
+    if len(trimmed) > MAX_TRAIN_WINDOW:
+        trimmed = trimmed.tail(MAX_TRAIN_WINDOW)
+
+    return trimmed
+
+
+def predict_smart_average(product_weekly, pname, cat, pid, forecast_days, today):
+    """
+    Previsao por media ponderada exponencial com ajuste de tendencia.
+    Usado para produtos com poucas semanas ou como fallback.
+    """
+    recent = product_weekly.tail(8)
+    sales = recent["quantity_sold"].values
+
+    if len(sales) == 0 or np.sum(sales) == 0:
         return None, None
 
-    # Pesos maiores para semanas mais recentes
-    weights = np.array([1, 2, 3, 4][-len(recent):], dtype=float)
-    avg_weekly = np.average(recent, weights=weights)
-    daily_avg = avg_weekly / 7
+    # Media ponderada exponencial (mais peso nas semanas recentes)
+    n = len(sales)
+    weights = np.exp(np.linspace(-1.5, 0, n))
+    avg_weekly = float(np.average(sales, weights=weights))
+
+    # Fator de tendencia: comparar primeira e segunda metade
+    if n >= 4:
+        first_half = np.mean(sales[:n // 2])
+        second_half = np.mean(sales[n // 2:])
+        if first_half > 0:
+            trend = second_half / first_half
+            trend = max(0.7, min(1.5, trend))  # limitar entre 0.7x e 1.5x
+        else:
+            trend = 1.0
+    else:
+        trend = 1.0
+
+    avg_weekly_adj = avg_weekly * trend
+    daily_avg = avg_weekly_adj / 7
 
     if daily_avg < 0.01:
         return None, None
@@ -344,7 +403,7 @@ def predict_simple_average(product_weekly, pname, cat, pid, forecast_days, today
 def predict_with_ml(product_data, pname, cat, pid, forecast_days, forecast_weeks, today):
     """
     Previsao com GradientBoosting e forecasting recursivo.
-    Usado para produtos com dados suficientes.
+    Usado para produtos com dados suficientes na fase ativa.
     """
     X = product_data[FEATURE_COLS]
     y = product_data["quantity_sold"]
@@ -358,16 +417,20 @@ def predict_with_ml(product_data, pname, cat, pid, forecast_days, forecast_weeks
     X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
 
-    # GradientBoosting - melhor que RandomForest para dados esparsos
+    # Sample weights: exponencial, recentes pesam mais
+    n_train = len(X_train)
+    sample_weight = np.exp(np.linspace(-2, 0, n_train))
+
+    # GradientBoosting com learning rate mais alto para datasets menores
     model = GradientBoostingRegressor(
-        n_estimators=200,
-        max_depth=4,
-        learning_rate=0.05,
+        n_estimators=300,
+        max_depth=3,
+        learning_rate=0.1,
         subsample=0.8,
         min_samples_leaf=2,
         random_state=42,
     )
-    model.fit(X_train, y_train)
+    model.fit(X_train, y_train, sample_weight=sample_weight)
 
     # Avaliar no conjunto de teste
     if len(X_test) > 0:
@@ -492,9 +555,12 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30):
         pname = product_data["product_name"].iloc[-1]
         cat = product_data["category"].iloc[-1]
 
-        n_weeks = len(product_data)
+        # CORRECAO CHAVE: trimmar para fase ativa (remover zeros antigos)
+        product_data = trim_to_active_phase(product_data)
+        n_active_weeks = len(product_data)
+        n_nonzero = (product_data["quantity_sold"] > 0).sum()
 
-        if n_weeks >= MIN_WEEKS_ML:
+        if n_active_weeks >= MIN_WEEKS_ML and n_nonzero >= 4:
             # ML approach
             future_df, metrics = predict_with_ml(
                 product_data, pname, cat, pid, forecast_days, forecast_weeks, today
@@ -502,17 +568,18 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = 30):
             if future_df is not None:
                 results.append(future_df)
                 model_metrics.append(metrics)
-                print(f"  [ML]  {pname}: MAE={metrics['mae']:.2f} | R2={metrics['r2_score']:.3f} | {n_weeks} semanas")
+                avg_pred = future_df["predicted_quantity"].mean()
+                print(f"  [ML]  {pname}: pred={avg_pred:.2f}/dia | MAE={metrics['mae']:.2f} | R2={metrics['r2_score']:.3f} | {n_active_weeks}w ({n_nonzero} com vendas)")
         else:
-            # Simple average
-            future_df, metrics = predict_simple_average(
+            # Smart average
+            future_df, metrics = predict_smart_average(
                 product_data, pname, cat, pid, forecast_days, today
             )
             if future_df is not None:
                 results.append(future_df)
                 model_metrics.append(metrics)
                 avg = future_df["predicted_quantity"].iloc[0]
-                print(f"  [AVG] {pname}: media diaria = {avg:.2f} | {n_weeks} semanas")
+                print(f"  [AVG] {pname}: pred={avg:.2f}/dia | {n_active_weeks}w ({n_nonzero} com vendas)")
 
     metrics_df = pd.DataFrame(model_metrics)
     predictions_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
