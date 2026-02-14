@@ -1,10 +1,11 @@
 import pandas as pd
 import numpy as np
-from dash import Dash, html, dcc, callback, Output, Input
+from dash import Dash, html, dcc, callback, Output, Input, State, no_update
 import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 import sys
+import agent as ai_agent
 
 # ============================================================
 # LOAD DATA
@@ -342,6 +343,107 @@ app.layout = html.Div(
             html.Div(id="kpi-container",
                 style={"display": "flex", "gap": "14px", "flexWrap": "wrap", "marginBottom": "28px"},
             ),
+
+            # ============ AI SALES ASSISTANT ============
+            html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                # Header + quick action buttons
+                html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
+                                "marginBottom": "16px", "flexWrap": "wrap", "gap": "12px"}, children=[
+                    html.Div(children=[
+                        html.H3("AI Sales Assistant", style={
+                            "margin": "0 0 2px", "fontSize": "16px", "fontWeight": "600",
+                            "background": "linear-gradient(90deg, #58a6ff, #a855f7)",
+                            "WebkitBackgroundClip": "text", "WebkitTextFillColor": "transparent",
+                        }),
+                        html.P("Ask anything about your sales, products, or forecasts", style={
+                            "color": COLORS["text_muted"], "fontSize": "12px", "margin": "0",
+                        }),
+                    ]),
+                    html.Div(style={"display": "flex", "gap": "8px", "flexWrap": "wrap"}, children=[
+                        html.Button("Daily Report", id="quick-daily", n_clicks=0, style={
+                            "backgroundColor": "rgba(88, 166, 255, 0.1)", "color": COLORS["accent"],
+                            "border": f"1px solid {COLORS['accent']}", "borderRadius": "6px",
+                            "padding": "6px 14px", "fontSize": "12px", "cursor": "pointer",
+                            "fontFamily": FONT, "fontWeight": "500",
+                        }),
+                        html.Button("Weekly Summary", id="quick-weekly", n_clicks=0, style={
+                            "backgroundColor": "rgba(34, 197, 94, 0.1)", "color": COLORS["accent3"],
+                            "border": f"1px solid {COLORS['accent3']}", "borderRadius": "6px",
+                            "padding": "6px 14px", "fontSize": "12px", "cursor": "pointer",
+                            "fontFamily": FONT, "fontWeight": "500",
+                        }),
+                        html.Button("Top Products", id="quick-top", n_clicks=0, style={
+                            "backgroundColor": "rgba(249, 115, 22, 0.1)", "color": COLORS["accent2"],
+                            "border": f"1px solid {COLORS['accent2']}", "borderRadius": "6px",
+                            "padding": "6px 14px", "fontSize": "12px", "cursor": "pointer",
+                            "fontFamily": FONT, "fontWeight": "500",
+                        }),
+                        html.Button("Forecast Analysis", id="quick-forecast", n_clicks=0, style={
+                            "backgroundColor": "rgba(168, 85, 247, 0.1)", "color": COLORS["accent4"],
+                            "border": f"1px solid {COLORS['accent4']}", "borderRadius": "6px",
+                            "padding": "6px 14px", "fontSize": "12px", "cursor": "pointer",
+                            "fontFamily": FONT, "fontWeight": "500",
+                        }),
+                    ]),
+                ]),
+
+                # Chat messages area
+                html.Div(id="chat-display", style={
+                    "maxHeight": "500px", "overflowY": "auto", "marginBottom": "16px",
+                    "padding": "16px", "backgroundColor": COLORS["bg"],
+                    "borderRadius": "8px", "border": f"1px solid {COLORS['card_border']}",
+                    "minHeight": "80px",
+                }, children=[
+                    html.Div(style={"display": "flex", "gap": "10px", "alignItems": "flex-start"}, children=[
+                        html.Div("AI", style={
+                            "backgroundColor": COLORS["accent4"], "color": "#fff",
+                            "borderRadius": "50%", "width": "28px", "height": "28px",
+                            "display": "flex", "alignItems": "center", "justifyContent": "center",
+                            "fontSize": "11px", "fontWeight": "700", "flexShrink": "0",
+                        }),
+                        dcc.Markdown(
+                            "Hello! I'm your **AI Sales Assistant**. Ask me anything about your sales, "
+                            "products, or forecasts. You can also use the quick action buttons above to "
+                            "generate reports instantly.",
+                            style={"color": COLORS["text"], "fontSize": "13px", "margin": "0",
+                                   "lineHeight": "1.6", "flex": "1"},
+                        ),
+                    ]),
+                ]),
+
+                # Input area
+                html.Div(style={"display": "flex", "gap": "12px"}, children=[
+                    dcc.Input(
+                        id="chat-input",
+                        type="text",
+                        placeholder="Ask about sales, products, forecasts...",
+                        debounce=False,
+                        n_submit=0,
+                        style={
+                            "flex": "1", "backgroundColor": COLORS["bg"],
+                            "color": COLORS["text"], "border": f"1px solid {COLORS['card_border']}",
+                            "borderRadius": "8px", "padding": "12px 16px", "fontSize": "13px",
+                            "fontFamily": FONT, "outline": "none",
+                        },
+                    ),
+                    html.Button("Send", id="chat-send", n_clicks=0, style={
+                        "backgroundColor": COLORS["accent"], "color": "#fff",
+                        "border": "none", "borderRadius": "8px", "padding": "12px 24px",
+                        "fontSize": "13px", "fontWeight": "600", "cursor": "pointer",
+                        "fontFamily": FONT,
+                    }),
+                    html.Button("Clear", id="chat-clear", n_clicks=0, style={
+                        "backgroundColor": "transparent", "color": COLORS["text_muted"],
+                        "border": f"1px solid {COLORS['card_border']}", "borderRadius": "8px",
+                        "padding": "12px 16px", "fontSize": "13px", "cursor": "pointer",
+                        "fontFamily": FONT,
+                    }),
+                ]),
+
+                # Hidden stores
+                dcc.Store(id="chat-history", data=[]),
+                dcc.Store(id="chat-loading", data=False),
+            ]),
 
             # ============ TABS: EVENTOS ATIVOS / PASSADOS ============
             dcc.Tabs(
@@ -1160,6 +1262,150 @@ def update_metrics_table(selected_cats, tab_value):
         [html.Thead(header), html.Tbody(rows)],
         style={"width": "100%", "borderCollapse": "collapse"},
     )
+
+
+# ============================================================
+# AI CHAT CALLBACKS
+# ============================================================
+
+def _make_message_bubble(role, content):
+    """Create a styled chat message bubble."""
+    is_user = role == "user"
+    return html.Div(
+        style={
+            "display": "flex", "gap": "10px", "alignItems": "flex-start",
+            "marginBottom": "16px",
+            "flexDirection": "row-reverse" if is_user else "row",
+        },
+        children=[
+            # Avatar
+            html.Div(
+                "You" if is_user else "AI",
+                style={
+                    "backgroundColor": COLORS["accent"] if is_user else COLORS["accent4"],
+                    "color": "#fff", "borderRadius": "50%",
+                    "width": "28px", "height": "28px",
+                    "display": "flex", "alignItems": "center", "justifyContent": "center",
+                    "fontSize": "10px", "fontWeight": "700", "flexShrink": "0",
+                },
+            ),
+            # Message content
+            html.Div(
+                style={
+                    "backgroundColor": "rgba(88,166,255,0.08)" if is_user else "transparent",
+                    "borderRadius": "10px", "padding": "10px 14px" if is_user else "0",
+                    "maxWidth": "85%",
+                },
+                children=[
+                    dcc.Markdown(
+                        content,
+                        style={
+                            "color": COLORS["text"], "fontSize": "13px",
+                            "margin": "0", "lineHeight": "1.6",
+                        },
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
+@callback(
+    Output("chat-display", "children"),
+    Output("chat-history", "data"),
+    Output("chat-input", "value"),
+    Input("chat-send", "n_clicks"),
+    Input("chat-input", "n_submit"),
+    Input("quick-daily", "n_clicks"),
+    Input("quick-weekly", "n_clicks"),
+    Input("quick-top", "n_clicks"),
+    Input("quick-forecast", "n_clicks"),
+    Input("chat-clear", "n_clicks"),
+    State("chat-input", "value"),
+    State("chat-history", "data"),
+    prevent_initial_call=True,
+)
+def handle_chat(send_clicks, n_submit, daily_clicks, weekly_clicks,
+                top_clicks, forecast_clicks, clear_clicks,
+                input_value, chat_history):
+    from dash import ctx
+
+    # Determine which input triggered
+    triggered_id = ctx.triggered_id
+
+    # --- Clear chat ---
+    if triggered_id == "chat-clear":
+        welcome = html.Div(
+            style={"display": "flex", "gap": "10px", "alignItems": "flex-start"},
+            children=[
+                html.Div("AI", style={
+                    "backgroundColor": COLORS["accent4"], "color": "#fff",
+                    "borderRadius": "50%", "width": "28px", "height": "28px",
+                    "display": "flex", "alignItems": "center", "justifyContent": "center",
+                    "fontSize": "11px", "fontWeight": "700", "flexShrink": "0",
+                }),
+                dcc.Markdown(
+                    "Chat cleared. How can I help you?",
+                    style={"color": COLORS["text"], "fontSize": "13px",
+                           "margin": "0", "lineHeight": "1.6", "flex": "1"},
+                ),
+            ],
+        )
+        return [welcome], [], ""
+
+    # --- Determine question ---
+    question = None
+    quick_label = None
+
+    if triggered_id in ("chat-send", "chat-input"):
+        question = (input_value or "").strip()
+        if not question:
+            return no_update, no_update, no_update
+    elif triggered_id == "quick-daily":
+        question = ai_agent.QUICK_ACTIONS["daily_report"]
+        quick_label = "Daily Report"
+    elif triggered_id == "quick-weekly":
+        question = ai_agent.QUICK_ACTIONS["weekly_summary"]
+        quick_label = "Weekly Summary"
+    elif triggered_id == "quick-top":
+        question = ai_agent.QUICK_ACTIONS["top_products"]
+        quick_label = "Top Products"
+    elif triggered_id == "quick-forecast":
+        question = ai_agent.QUICK_ACTIONS["forecast_analysis"]
+        quick_label = "Forecast Analysis"
+
+    if not question:
+        return no_update, no_update, no_update
+
+    # Display text for the user message bubble
+    display_question = quick_label if quick_label else question
+
+    # --- Call AI agent ---
+    try:
+        response = ai_agent.chat(question, hist_df, pred_df, metrics_df, chat_history)
+    except Exception as e:
+        response = f"**Error:** {str(e)}"
+
+    # Update history
+    new_history = list(chat_history or [])
+    new_history.append({"role": "user", "content": question})
+    new_history.append({"role": "assistant", "content": response})
+
+    # Build all message bubbles
+    bubbles = []
+    for msg in new_history:
+        display_text = msg["content"]
+        # For quick actions in history, show short label if it matches
+        if msg["role"] == "user":
+            for key, val in ai_agent.QUICK_ACTIONS.items():
+                if msg["content"] == val:
+                    labels = {"daily_report": "Daily Report", "weekly_summary": "Weekly Summary",
+                              "top_products": "Top Products", "forecast_analysis": "Forecast Analysis"}
+                    display_text = f"Generate: **{labels.get(key, key)}**"
+                    break
+        bubbles.append(_make_message_bubble(msg["role"], display_text))
+
+    return bubbles, new_history, ""
 
 
 # ============================================================
