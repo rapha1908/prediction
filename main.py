@@ -1,3 +1,4 @@
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -15,13 +16,18 @@ warnings.filterwarnings("ignore")
 logging.getLogger("prophet").setLevel(logging.WARNING)
 logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
 
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
 # ============================================================
-# 1. CONFIGURACAO DA API WOOCOMMERCE
+# 1. CONFIGURACAO
 # ============================================================
 
-URL_BASE = "https://tcche.org/wp-json/wc/v3/"
-CONSUMER_KEY = "ck_54336e22a72c18dc35961d611bf0f2b5c5e0142d"
-CONSUMER_SECRET = "cs_196af8ffe0125718a5335d424710add10d5f50a3"
+URL_BASE = os.getenv("WOOCOMMERCE_URL", "https://tcche.org/wp-json/wc/v3/")
+CONSUMER_KEY = os.getenv("WOOCOMMERCE_KEY", "ck_54336e22a72c18dc35961d611bf0f2b5c5e0142d")
+CONSUMER_SECRET = os.getenv("WOOCOMMERCE_SECRET", "cs_196af8ffe0125718a5335d424710add10d5f50a3")
 
 AUTH_PARAMS = {
     "consumer_key": CONSUMER_KEY,
@@ -118,118 +124,34 @@ def fetch_products() -> pd.DataFrame:
     return df
 
 
-def fetch_orders() -> pd.DataFrame:
-    """Busca pedidos completed e processing (ignora cancelados/reembolsados)."""
+def fetch_orders(after_date=None) -> list:
+    """
+    Busca pedidos completed e processing da API.
+    Se after_date for fornecido, busca apenas pedidos apos essa data (incremental).
+    Retorna lista de dicts brutos da API.
+    """
     print("\n[*] Buscando pedidos...")
     all_orders = []
 
     for status in ["completed", "processing"]:
-        print(f"  Buscando pedidos com status '{status}'...")
-        orders = fetch_all_pages("orders", extra_params={"status": status})
+        extra = {"status": status}
+        if after_date:
+            # API WooCommerce aceita 'after' como ISO 8601
+            iso_date = pd.to_datetime(after_date).isoformat()
+            extra["after"] = iso_date
+            print(f"  Buscando '{status}' apos {iso_date}...")
+        else:
+            print(f"  Buscando todos com status '{status}'...")
+
+        orders = fetch_all_pages("orders", extra_params=extra)
         all_orders.extend(orders)
 
-    df = pd.DataFrame(all_orders)
-
-    if df.empty:
-        print("  Nenhum pedido encontrado.")
-        return df
-
-    print(f"  Total: {len(df)} pedidos (completed + processing).")
-    return df
+    print(f"  Total: {len(all_orders)} pedidos obtidos.")
+    return all_orders
 
 
 # ============================================================
-# 3. PROCESSAMENTO DOS DADOS DE VENDAS
-# ============================================================
-
-def build_sales_dataframe(orders_df: pd.DataFrame, products_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Processa pedidos -> DataFrame de vendas diarias.
-    Consolida nomes usando o catalogo de produtos.
-    """
-    print("\n[*] Processando dados de vendas...")
-
-    cat_map = {}
-    name_map = {}
-    end_date_map = {}
-    start_date_map = {}
-    if not products_df.empty:
-        if "id" in products_df.columns and "category" in products_df.columns:
-            cat_map = dict(zip(products_df["id"], products_df["category"]))
-        if "id" in products_df.columns and "name" in products_df.columns:
-            name_map = dict(zip(products_df["id"], products_df["name"]))
-        if "id" in products_df.columns and "ticket_end_date" in products_df.columns:
-            end_date_map = {
-                k: v for k, v in zip(products_df["id"], products_df["ticket_end_date"])
-                if pd.notna(v) and str(v).strip() != ""
-            }
-        if "id" in products_df.columns and "ticket_start_date" in products_df.columns:
-            start_date_map = {
-                k: v for k, v in zip(products_df["id"], products_df["ticket_start_date"])
-                if pd.notna(v) and str(v).strip() != ""
-            }
-
-    rows = []
-    for _, order in orders_df.iterrows():
-        order_date = pd.to_datetime(order.get("date_created", None))
-        if order_date is None:
-            continue
-
-        line_items = order.get("line_items", [])
-        if not isinstance(line_items, list):
-            continue
-
-        for item in line_items:
-            pid = item.get("product_id")
-            qty = item.get("quantity", 0)
-            total = float(item.get("total", 0))
-
-            if qty <= 0:
-                continue
-
-            pname = name_map.get(pid, item.get("name", "Desconhecido"))
-
-            rows.append({
-                "order_date": order_date.date(),
-                "product_id": pid,
-                "product_name": pname,
-                "category": cat_map.get(pid, "Sem categoria"),
-                "ticket_end_date": end_date_map.get(pid, ""),
-                "ticket_start_date": start_date_map.get(pid, ""),
-                "quantity": qty,
-                "total": total,
-            })
-
-    sales_df = pd.DataFrame(rows)
-
-    if sales_df.empty:
-        print("  Nenhuma venda encontrada nos pedidos.")
-        return sales_df
-
-    sales_df["order_date"] = pd.to_datetime(sales_df["order_date"])
-
-    daily_sales = (
-        sales_df
-        .groupby(["order_date", "product_id"])
-        .agg(
-            product_name=("product_name", "first"),
-            category=("category", "first"),
-            ticket_end_date=("ticket_end_date", "first"),
-            ticket_start_date=("ticket_start_date", "first"),
-            quantity_sold=("quantity", "sum"),
-            revenue=("total", "sum"),
-        )
-        .reset_index()
-    )
-
-    print(f"  {len(daily_sales)} registros de vendas diarias processados.")
-    print(f"  Produtos unicos com vendas: {daily_sales['product_id'].nunique()}")
-    print(f"  Categorias encontradas: {daily_sales['category'].nunique()}")
-    return daily_sales
-
-
-# ============================================================
-# 4. PREPARACAO DOS DADOS PARA PROPHET
+# 3. PREPARACAO DOS DADOS PARA PROPHET
 # ============================================================
 
 def find_active_phase(daily_data, gap_days=MAX_GAP_DAYS):
@@ -243,14 +165,12 @@ def find_active_phase(daily_data, gap_days=MAX_GAP_DAYS):
     if len(sorted_dates) <= 1:
         return daily_data
 
-    # Percorrer de tras pra frente e encontrar o primeiro gap grande
     for i in range(len(sorted_dates) - 1, 0, -1):
         gap = (sorted_dates[i] - sorted_dates[i - 1]) / np.timedelta64(1, "D")
         if gap > gap_days:
             cutoff = pd.Timestamp(sorted_dates[i])
             return daily_data[daily_data["order_date"] >= cutoff]
 
-    # Sem gap grande - limitar a 365 dias
     max_date = pd.Timestamp(sorted_dates[-1])
     cutoff = max_date - pd.Timedelta(days=365)
     return daily_data[daily_data["order_date"] >= cutoff]
@@ -260,7 +180,7 @@ def prepare_prophet_data(daily_data, today):
     """
     Prepara dados para Prophet:
     - Filtra fase ativa do produto
-    - Preenche datas sem vendas com 0 (dia sem venda = 0, nao missing)
+    - Preenche datas sem vendas com 0
     - Retorna DataFrame com colunas 'ds' e 'y'
     """
     active = find_active_phase(daily_data)
@@ -271,7 +191,6 @@ def prepare_prophet_data(daily_data, today):
     if daily_agg.empty:
         return pd.DataFrame(columns=["ds", "y"])
 
-    # Preencher datas faltantes com 0 dentro da fase ativa
     date_range = pd.date_range(daily_agg["ds"].min(), today)
     full = pd.DataFrame({"ds": date_range})
     full = full.merge(daily_agg, on="ds", how="left")
@@ -281,7 +200,7 @@ def prepare_prophet_data(daily_data, today):
 
 
 # ============================================================
-# 5. TREINAMENTO E PREVISAO COM PROPHET
+# 4. TREINAMENTO E PREVISAO COM PROPHET
 # ============================================================
 
 def predict_with_prophet(prophet_data, pname, cat, pid, forecast_days, today):
@@ -292,7 +211,6 @@ def predict_with_prophet(prophet_data, pname, cat, pid, forecast_days, today):
     n = len(prophet_data)
     has_yearly = n > 365
 
-    # --- 1) Avaliar com split temporal 80/20 ---
     split_idx = int(n * 0.8)
     train = prophet_data.iloc[:split_idx]
     test = prophet_data.iloc[split_idx:]
@@ -318,7 +236,6 @@ def predict_with_prophet(prophet_data, pname, cat, pid, forecast_days, today):
     else:
         mae = rmse = r2 = 0
 
-    # --- 2) Treinar com TODOS os dados para previsao final ---
     model = Prophet(
         daily_seasonality=False,
         weekly_seasonality=True,
@@ -330,7 +247,6 @@ def predict_with_prophet(prophet_data, pname, cat, pid, forecast_days, today):
     )
     model.fit(prophet_data)
 
-    # --- 3) Prever futuro ---
     future = model.make_future_dataframe(periods=forecast_days)
     forecast = model.predict(future)
 
@@ -412,7 +328,6 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = FORECAST_D
     """
     today = pd.Timestamp.now().normalize()
 
-    # Filtrar produtos ativos (vendas recentes)
     cutoff = today - pd.Timedelta(weeks=ACTIVE_WINDOW_WEEKS)
     active_pids = set(
         daily_sales[daily_sales["order_date"] >= cutoff]["product_id"].unique()
@@ -429,7 +344,7 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = FORECAST_D
     if "ticket_end_date" in daily_sales.columns:
         for pid_val, grp in daily_sales.groupby("product_id"):
             val = grp["ticket_end_date"].dropna().iloc[0] if grp["ticket_end_date"].notna().any() else ""
-            if str(val).strip():
+            if str(val).strip() and str(val).strip() != "NaT":
                 end_date_by_pid[pid_val] = str(val).strip()
 
     for idx, pid in enumerate(sorted(active_pids), 1):
@@ -441,30 +356,29 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = FORECAST_D
         cat = product_data["category"].iloc[-1]
         t_end = end_date_by_pid.get(pid, "")
 
-        # Preparar dados para Prophet
         prophet_data = prepare_prophet_data(product_data, today)
         n_days = len(prophet_data)
         n_nonzero = int((prophet_data["y"] > 0).sum()) if not prophet_data.empty else 0
 
         if n_days >= MIN_DAYS_PROPHET and n_nonzero >= 3:
-            # Prophet
             future_df, metrics = predict_with_prophet(
                 prophet_data, pname, cat, pid, forecast_days, today
             )
             if future_df is not None and not future_df.empty:
                 future_df["ticket_end_date"] = t_end
+                future_df["method"] = "prophet"
                 results.append(future_df)
                 metrics["ticket_end_date"] = t_end
                 model_metrics.append(metrics)
                 avg = future_df["predicted_quantity"].mean()
                 print(f"  [{idx}/{total}] [Prophet] {pname[:50]}: {avg:.2f}/dia | MAE={metrics['mae']:.2f} | R2={metrics['r2_score']:.3f} | {n_days}d ({n_nonzero} vendas)")
         else:
-            # Simple average fallback
             future_df, metrics = predict_simple_average(
                 product_data, pname, cat, pid, forecast_days, today
             )
             if future_df is not None:
                 future_df["ticket_end_date"] = t_end
+                future_df["method"] = "weighted_average"
                 results.append(future_df)
                 metrics["ticket_end_date"] = t_end
                 model_metrics.append(metrics)
@@ -478,38 +392,8 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = FORECAST_D
 
 
 # ============================================================
-# 6. VISUALIZACOES
+# 5. VISUALIZACOES
 # ============================================================
-
-def plot_sales_overview(daily_sales: pd.DataFrame):
-    """Grafico geral de vendas ao longo do tempo."""
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-
-    total_by_day = daily_sales.groupby("order_date")["quantity_sold"].sum().reset_index()
-    axes[0].plot(total_by_day["order_date"], total_by_day["quantity_sold"],
-                 color="#2196F3", linewidth=1.5)
-    axes[0].fill_between(total_by_day["order_date"], total_by_day["quantity_sold"],
-                         alpha=0.15, color="#2196F3")
-    axes[0].set_title("Vendas Totais por Dia", fontsize=14, fontweight="bold")
-    axes[0].set_xlabel("Data")
-    axes[0].set_ylabel("Quantidade Vendida")
-    axes[0].tick_params(axis="x", rotation=45)
-
-    top_products = (
-        daily_sales.groupby("product_name")["quantity_sold"].sum()
-        .nlargest(10).reset_index()
-    )
-    sns.barplot(data=top_products, y="product_name", x="quantity_sold",
-                palette="Blues_d", ax=axes[1])
-    axes[1].set_title("Top 10 Produtos por Quantidade Vendida", fontsize=14, fontweight="bold")
-    axes[1].set_xlabel("Quantidade Total Vendida")
-    axes[1].set_ylabel("")
-
-    plt.tight_layout()
-    plt.savefig("vendas_overview.png", dpi=150, bbox_inches="tight")
-    plt.close()
-    print("  [OK] Grafico salvo: vendas_overview.png")
-
 
 def plot_predictions(daily_sales: pd.DataFrame, predictions_df: pd.DataFrame, top_n: int = 6):
     """Grafico de vendas historicas + previsoes para os top N produtos."""
@@ -616,62 +500,104 @@ def print_forecast_summary(predictions_df: pd.DataFrame, metrics_df: pd.DataFram
 
 
 # ============================================================
-# 7. EXECUCAO PRINCIPAL
+# 6. EXECUCAO PRINCIPAL
 # ============================================================
 
 def main():
+    import db
+
+    full_mode = "--full" in sys.argv
+
     print("=" * 60)
     print("   SISTEMA DE PREVISAO DE VENDAS - WooCommerce")
-    print("   (v3 - Prophet by Meta)")
+    print("   (v4 - Prophet + PostgreSQL)")
     print("=" * 60)
 
-    # 1. Coletar dados
-    products_df = fetch_products()
-    orders_df = fetch_orders()
-
-    if orders_df.empty:
-        print("\n[ERRO] Nao foi possivel obter pedidos. Verifique a API.")
+    # --- Conectar ao banco ---
+    if not db.test_connection():
+        print("\n[ERRO] PostgreSQL nao esta disponivel.")
+        print("  Execute: docker compose up -d")
         return
 
-    # 2. Processar vendas
-    daily_sales = build_sales_dataframe(orders_df, products_df)
+    db.create_tables()
+
+    # --- 1. Sync de produtos (sempre completo - sao poucos) ---
+    products_df = fetch_products()
+    if not products_df.empty:
+        n = db.upsert_products(products_df)
+        print(f"  [OK] {n} produtos sincronizados no banco.")
+
+    # --- 2. Sync incremental de pedidos ---
+    last_sync = db.get_last_sync_date()
+    existing_orders = db.get_order_count()
+
+    if full_mode or last_sync is None or existing_orders == 0:
+        if full_mode:
+            print("\n[*] Modo --full: buscando TODOS os pedidos...")
+        else:
+            print("\n[*] Primeira execucao: buscando todos os pedidos...")
+        orders_raw = fetch_orders(after_date=None)
+    else:
+        # Buscar a partir de 2 dias antes do ultimo sync (margem de seguranca)
+        after = last_sync - timedelta(days=2)
+        print(f"\n[*] Sync incremental (pedidos apos {after})...")
+        orders_raw = fetch_orders(after_date=after)
+
+    if orders_raw:
+        inserted = db.insert_orders(orders_raw, products_df)
+        total = db.get_order_count()
+        print(f"  [OK] {inserted} novos itens inseridos. Total no banco: {total}")
+    else:
+        print("  Nenhum pedido novo encontrado.")
+
+    # --- 3. Reagregar daily_sales ---
+    print("\n[*] Atualizando vendas diarias agregadas...")
+    db.refresh_daily_sales()
+
+    # --- 4. Carregar dados para treinamento ---
+    daily_sales = db.load_daily_sales()
 
     if daily_sales.empty:
-        print("\n[ERRO] Nenhum dado de venda foi processado.")
+        print("\n[ERRO] Nenhum dado de venda no banco.")
         return
 
-    # 3. Visualizar dados historicos
-    print("\n[*] Gerando visualizacoes de vendas...")
-    plot_sales_overview(daily_sales)
+    print(f"\n[*] Dados carregados: {len(daily_sales)} registros, "
+          f"{daily_sales['product_id'].nunique()} produtos")
 
-    # 4. Treinar Prophet e gerar previsoes
+    # --- 5. Treinar Prophet e gerar previsoes ---
     predictions_df, metrics_df = train_and_predict(daily_sales, forecast_days=FORECAST_DAYS)
 
-    # 5. Estatisticas
+    # --- 6. Salvar previsoes no banco ---
+    run_id = db.generate_run_id()
+    print(f"\n[*] Salvando previsoes (run_id: {run_id})...")
+
+    if not predictions_df.empty:
+        n_pred = db.save_predictions(predictions_df, run_id)
+        print(f"  [OK] {n_pred} previsoes salvas no banco.")
+
     if not metrics_df.empty:
+        n_met = db.save_metrics(metrics_df, run_id)
+        print(f"  [OK] {n_met} metricas salvas no banco.")
         prophet_count = (metrics_df["method"] == "prophet").sum()
         avg_count = (metrics_df["method"] == "weighted_average").sum()
-        print(f"\n[*] Modelos treinados: {len(metrics_df)}")
-        print(f"    Prophet: {prophet_count} | Media Ponderada: {avg_count}")
+        print(f"  Prophet: {prophet_count} | Media Ponderada: {avg_count}")
 
-    # 6. Visualizar previsoes
+    # --- 7. Graficos e resumo ---
     print("\n[*] Gerando graficos de previsao...")
     plot_predictions(daily_sales, predictions_df)
-
-    # 7. Resumo final
     print_forecast_summary(predictions_df, metrics_df)
 
-    # 8. Salvar CSVs
+    # --- 8. Tambem salvar CSVs (compatibilidade) ---
     daily_sales.to_csv("vendas_historicas.csv", index=False)
-    print("\n[OK] Historico salvo em: vendas_historicas.csv")
+    print("\n[OK] CSV de historico salvo: vendas_historicas.csv")
 
     if not predictions_df.empty:
         predictions_df.to_csv("previsoes_vendas.csv", index=False)
-        print(f"[OK] Previsoes salvas em: previsoes_vendas.csv ({len(predictions_df)} registros)")
+        print(f"[OK] CSV de previsoes salvo: previsoes_vendas.csv ({len(predictions_df)} registros)")
 
     if not metrics_df.empty:
         metrics_df.to_csv("metricas_modelos.csv", index=False)
-        print(f"[OK] Metricas salvas em: metricas_modelos.csv ({len(metrics_df)} modelos)")
+        print(f"[OK] CSV de metricas salvo: metricas_modelos.csv ({len(metrics_df)} modelos)")
 
     print("\n>>> Para abrir a dashboard, execute: py dashboard.py")
 

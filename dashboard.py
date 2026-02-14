@@ -13,8 +13,22 @@ import sys
 DATA_DIR = Path(__file__).parent
 
 
-def load_data():
-    """Carrega os CSVs gerados pelo main.py."""
+def _load_from_postgres():
+    """Tenta carregar dados do PostgreSQL."""
+    try:
+        import db
+        if not db.test_connection():
+            return None
+        hist, pred, metrics = db.load_for_dashboard()
+        print("  [OK] Dados carregados do PostgreSQL.")
+        return hist, pred, metrics
+    except Exception as e:
+        print(f"  [AVISO] Nao foi possivel carregar do Postgres: {e}")
+        return None
+
+
+def _load_from_csv():
+    """Fallback: carrega dados dos CSVs."""
     files = {
         "historico": DATA_DIR / "vendas_historicas.csv",
         "previsoes": DATA_DIR / "previsoes_vendas.csv",
@@ -30,6 +44,18 @@ def load_data():
     hist = pd.read_csv(files["historico"], parse_dates=["order_date"])
     pred = pd.read_csv(files["previsoes"], parse_dates=["order_date"])
     metrics = pd.read_csv(files["metricas"])
+
+    print("  [OK] Dados carregados dos CSVs (fallback).")
+    return hist, pred, metrics
+
+
+def load_data():
+    """Carrega dados do PostgreSQL (preferido) ou CSVs (fallback)."""
+    result = _load_from_postgres()
+    if result is None:
+        hist, pred, metrics = _load_from_csv()
+    else:
+        hist, pred, metrics = result
 
     # Garantir coluna category
     for df in [hist, pred, metrics]:
