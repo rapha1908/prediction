@@ -40,6 +40,11 @@ def load_data():
     if not metrics.empty and "product_id" in metrics.columns:
         metrics = metrics.drop_duplicates(subset=["product_id"], keep="first")
 
+    # Parsear ticket_end_date como datetime em todos os DataFrames
+    for df in [hist, pred, metrics]:
+        if "ticket_end_date" in df.columns:
+            df["ticket_end_date"] = pd.to_datetime(df["ticket_end_date"], errors="coerce")
+
     return hist, pred, metrics
 
 
@@ -91,6 +96,49 @@ def explode_categories(df):
 
 # Mapa de categorias por produto
 product_cat_map = build_product_cat_map(hist_df)
+
+# Mapa de produto -> evento ativo ou passado (baseado em ticket_end_date)
+TODAY = pd.Timestamp.now().normalize()
+
+
+def build_event_status_map():
+    """
+    Cria mapa product_id -> 'active' ou 'past' baseado em ticket_end_date.
+    Usa todos os DataFrames disponiveis para encontrar a data de cada produto.
+    """
+    # Primeiro, coletar a ticket_end_date mais confiavel para cada product_id
+    # Prioridade: hist > pred > metrics (hist tem mais produtos)
+    date_by_pid = {}
+    for df in [metrics_df, pred_df, hist_df]:  # hist por ultimo = maior prioridade
+        if "ticket_end_date" not in df.columns:
+            continue
+        for pid, grp in df.groupby("product_id"):
+            end_vals = grp["ticket_end_date"].dropna()
+            if not end_vals.empty:
+                date_by_pid[pid] = end_vals.iloc[0]
+
+    # Classificar cada produto
+    status_map = {}
+    all_pids = set(hist_df["product_id"].unique())
+    all_pids |= set(pred_df["product_id"].unique()) if "product_id" in pred_df.columns else set()
+
+    for pid in all_pids:
+        if pid in date_by_pid:
+            end_date = date_by_pid[pid]
+            if pd.notna(end_date):
+                status_map[pid] = "active" if end_date >= TODAY else "past"
+            else:
+                status_map[pid] = "active"
+        else:
+            status_map[pid] = "active"  # sem data = considerar ativo
+
+    return status_map
+
+
+event_status_map = build_event_status_map()
+n_active = sum(1 for v in event_status_map.values() if v == "active")
+n_past = sum(1 for v in event_status_map.values() if v == "past")
+print(f"  Eventos: {n_active} ativos, {n_past} passados")
 
 # Categorias unicas (expandidas de pipe-separadas)
 all_categories = sorted(set(
@@ -232,17 +280,52 @@ app.layout = html.Div(
         # --- CONTEUDO ---
         html.Div(style={"padding": "28px 48px", "maxWidth": "1440px", "margin": "0 auto"}, children=[
 
-            # KPIs
-            html.Div(
+            # KPIs (dinamicos com a tab)
+            html.Div(id="kpi-container",
                 style={"display": "flex", "gap": "14px", "flexWrap": "wrap", "marginBottom": "28px"},
+            ),
+
+            # ============ TABS: EVENTOS ATIVOS / PASSADOS ============
+            dcc.Tabs(
+                id="event-tabs",
+                value="active",
+                style={"marginBottom": "24px"},
                 children=[
-                    kpi_card("Produtos", str(total_products), color=COLORS["accent"]),
-                    kpi_card("Vendas Totais", f"{total_sales_qty:,}".replace(",", "."), color=COLORS["accent3"]),
-                    kpi_card("Receita Total", f"$ {total_revenue:,.2f}", color=COLORS["accent2"]),
-                    kpi_card("Categorias", str(len(all_categories)), color=COLORS["accent4"]),
-                    kpi_card("Previsao 30d", f"{pred_total_qty:,.0f} un.", color=COLORS["accent4"]),
+                    dcc.Tab(
+                        label=f"Eventos Ativos ({n_active})",
+                        value="active",
+                        style={"backgroundColor": COLORS["bg"], "color": COLORS["text_muted"],
+                               "border": f"1px solid {COLORS['card_border']}", "borderRadius": "8px 8px 0 0",
+                               "padding": "12px 24px", "fontFamily": FONT, "fontSize": "14px", "fontWeight": "500"},
+                        selected_style={"backgroundColor": COLORS["card"], "color": COLORS["accent"],
+                                        "border": f"1px solid {COLORS['card_border']}", "borderBottom": "none",
+                                        "borderRadius": "8px 8px 0 0", "padding": "12px 24px",
+                                        "fontFamily": FONT, "fontSize": "14px", "fontWeight": "700"},
+                    ),
+                    dcc.Tab(
+                        label=f"Eventos Passados ({n_past})",
+                        value="past",
+                        style={"backgroundColor": COLORS["bg"], "color": COLORS["text_muted"],
+                               "border": f"1px solid {COLORS['card_border']}", "borderRadius": "8px 8px 0 0",
+                               "padding": "12px 24px", "fontFamily": FONT, "fontSize": "14px", "fontWeight": "500"},
+                        selected_style={"backgroundColor": COLORS["card"], "color": COLORS["accent2"],
+                                        "border": f"1px solid {COLORS['card_border']}", "borderBottom": "none",
+                                        "borderRadius": "8px 8px 0 0", "padding": "12px 24px",
+                                        "fontFamily": FONT, "fontSize": "14px", "fontWeight": "700"},
+                    ),
                 ],
             ),
+
+            # ============ REPORTE DIARIO ============
+            html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                html.H3("Reporte Diario - Vendas e Previsao 7 Dias", style={
+                    "margin": "0 0 4px", "fontSize": "16px", "fontWeight": "600",
+                }),
+                html.P("Vendas recentes por produto e previsao diaria para os proximos 7 dias", style={
+                    "color": COLORS["text_muted"], "fontSize": "13px", "marginBottom": "16px",
+                }),
+                html.Div(id="daily-report", style={"overflowX": "auto", "maxHeight": "600px", "overflowY": "auto"}),
+            ]),
 
             # ============ FILTRO DE CATEGORIAS ============
             html.Div(style=card_style({"marginBottom": "28px"}), children=[
@@ -254,8 +337,8 @@ app.layout = html.Div(
                         html.Label("Categorias:", style={"fontSize": "13px", "color": COLORS["text_muted"], "marginBottom": "4px", "display": "block"}),
                         dcc.Dropdown(
                             id="category-filter",
-                            options=[{"label": c, "value": c} for c in all_categories],
-                            value=all_categories,
+                            options=[],
+                            value=[],
                             multi=True,
                             placeholder="Selecione categorias...",
                             style=dropdown_style,
@@ -360,16 +443,273 @@ app.layout = html.Div(
 # CALLBACKS
 # ============================================================
 
-# --- Atualizar dropdown de produtos baseado nas categorias ---
+def filter_by_event_tab(df, tab_value):
+    """Filtra DataFrame por status do evento (active/past) baseado na tab."""
+    if "product_id" not in df.columns:
+        return df
+    if tab_value == "active":
+        pids = {pid for pid, st in event_status_map.items() if st == "active"}
+    else:
+        pids = {pid for pid, st in event_status_map.items() if st == "past"}
+    return df[df["product_id"].isin(pids)]
+
+
+# --- Atualizar categorias baseado na tab ---
+@callback(
+    Output("category-filter", "options"),
+    Output("category-filter", "value"),
+    Input("event-tabs", "value"),
+)
+def update_category_filter(tab_value):
+    filtered = filter_by_event_tab(hist_df, tab_value)
+    if filtered.empty:
+        return [], []
+    cats = sorted(set(
+        cat
+        for cats_str in filtered["category"].dropna().unique()
+        for cat in parse_categories(cats_str)
+    ))
+    return [{"label": c, "value": c} for c in cats], cats
+
+
+# --- KPIs dinamicos ---
+@callback(
+    Output("kpi-container", "children"),
+    Input("event-tabs", "value"),
+)
+def update_kpis(tab_value):
+    fh = filter_by_event_tab(hist_df, tab_value)
+    fp = filter_by_event_tab(pred_df, tab_value)
+
+    n_products = fh["product_id"].nunique() if not fh.empty else 0
+    n_sales = int(fh["quantity_sold"].sum()) if not fh.empty else 0
+    rev = fh["revenue"].sum() if not fh.empty else 0
+    n_cats = len(set(
+        cat for cats_str in fh["category"].dropna().unique()
+        for cat in parse_categories(cats_str)
+    )) if not fh.empty else 0
+    pred_total = fp["predicted_quantity"].sum() if not fp.empty else 0
+
+    tab_label = "Ativos" if tab_value == "active" else "Passados"
+
+    return [
+        kpi_card("Produtos", str(n_products), color=COLORS["accent"], subtitle=tab_label),
+        kpi_card("Vendas Totais", f"{n_sales:,}".replace(",", "."), color=COLORS["accent3"]),
+        kpi_card("Receita Total", f"$ {rev:,.2f}", color=COLORS["accent2"]),
+        kpi_card("Categorias", str(n_cats), color=COLORS["accent4"]),
+        kpi_card("Previsao 30d", f"{pred_total:,.0f} un.", color=COLORS["accent4"]),
+    ]
+
+
+# --- Reporte diario ---
+@callback(
+    Output("daily-report", "children"),
+    Input("event-tabs", "value"),
+)
+def update_daily_report(tab_value):
+    fh = filter_by_event_tab(hist_df, tab_value)
+    fp = filter_by_event_tab(pred_df, tab_value)
+
+    if fh.empty and fp.empty:
+        return html.P("Nenhum produto encontrado.", style={"color": COLORS["text_muted"]})
+
+    today = pd.Timestamp.now().normalize()
+
+    # Produtos com previsao (ordenar por previsao total 7d)
+    pred_pids = set(fp["product_id"].unique()) if not fp.empty else set()
+    hist_pids = set(fh["product_id"].unique()) if not fh.empty else set()
+    all_pids = pred_pids | hist_pids
+
+    # Construir dados por produto
+    rows_data = []
+    for pid in all_pids:
+        ph = fh[fh["product_id"] == pid]
+        pp = fp[fp["product_id"] == pid]
+
+        pname = ph["product_name"].iloc[-1] if not ph.empty else (pp["product_name"].iloc[0] if not pp.empty else f"#{pid}")
+
+        # Vendas dos ultimos 7 dias
+        recent_sales = {}
+        if not ph.empty:
+            for i in range(7):
+                d = today - pd.Timedelta(days=7 - i)
+                day_data = ph[ph["order_date"] == d]
+                recent_sales[d] = int(day_data["quantity_sold"].sum()) if not day_data.empty else 0
+
+        # Previsao dos proximos 7 dias
+        forecast = {}
+        if not pp.empty:
+            pp_sorted = pp.sort_values("order_date")
+            for _, row in pp_sorted.head(7).iterrows():
+                forecast[row["order_date"]] = round(row["predicted_quantity"], 1)
+
+        # Total previsao 7d
+        total_prev_7d = sum(forecast.values())
+        total_recent_7d = sum(recent_sales.values())
+
+        rows_data.append({
+            "pid": pid,
+            "name": pname,
+            "recent_sales": recent_sales,
+            "forecast": forecast,
+            "total_recent_7d": total_recent_7d,
+            "total_prev_7d": total_prev_7d,
+        })
+
+    # Ordenar por previsao 7d desc
+    rows_data.sort(key=lambda x: x["total_prev_7d"], reverse=True)
+    rows_data = rows_data[:50]  # Limitar a 50 produtos
+
+    if not rows_data:
+        return html.P("Nenhum dado disponivel.", style={"color": COLORS["text_muted"]})
+
+    # Coletar datas para colunas
+    recent_dates = sorted(set(d for r in rows_data for d in r["recent_sales"]))
+    forecast_dates = sorted(set(d for r in rows_data for d in r["forecast"]))
+
+    # Estilo da tabela
+    th_style = {
+        "padding": "8px 10px", "textAlign": "center", "fontSize": "10px",
+        "color": COLORS["text_muted"], "textTransform": "uppercase",
+        "letterSpacing": "0.3px", "fontWeight": "600",
+        "borderBottom": f"2px solid {COLORS['card_border']}",
+        "position": "sticky", "top": "0", "backgroundColor": COLORS["card"],
+        "whiteSpace": "nowrap",
+    }
+    td_style = {
+        "padding": "6px 10px", "fontSize": "12px", "textAlign": "center",
+        "borderBottom": f"1px solid {COLORS['card_border']}",
+    }
+
+    # Header
+    header_cells = [
+        html.Th("Produto", style={**th_style, "textAlign": "left", "minWidth": "200px"}),
+    ]
+    # Colunas de vendas recentes (ultimos 7 dias)
+    for d in recent_dates:
+        day_label = d.strftime("%d/%m")
+        header_cells.append(html.Th(day_label, style={**th_style, "backgroundColor": "#1a2332"}))
+    header_cells.append(html.Th("Total 7d", style={**th_style, "backgroundColor": "#1a2332"}))
+
+    # Separador visual
+    header_cells.append(html.Th("", style={**th_style, "width": "4px", "padding": "0",
+                                            "backgroundColor": COLORS["accent"], "minWidth": "4px"}))
+
+    # Colunas de previsao (proximos 7 dias)
+    for d in forecast_dates:
+        day_label = d.strftime("%d/%m")
+        header_cells.append(html.Th(day_label, style={**th_style, "backgroundColor": "#2a1f14"}))
+    header_cells.append(html.Th("Total 7d", style={**th_style, "backgroundColor": "#2a1f14"}))
+
+    # Sub-header (label das secoes)
+    sub_cells = [html.Th("", style={**th_style, "borderBottom": f"1px solid {COLORS['card_border']}"})]
+    for _ in recent_dates:
+        sub_cells.append(html.Th("", style={**th_style, "borderBottom": f"1px solid {COLORS['card_border']}",
+                                             "backgroundColor": "#1a2332"}))
+    sub_cells.append(html.Th("", style={**th_style, "borderBottom": f"1px solid {COLORS['card_border']}",
+                                         "backgroundColor": "#1a2332"}))
+    sub_cells.append(html.Th("", style={**th_style, "width": "4px", "padding": "0",
+                                         "backgroundColor": COLORS["accent"], "minWidth": "4px"}))
+    for _ in forecast_dates:
+        sub_cells.append(html.Th("", style={**th_style, "borderBottom": f"1px solid {COLORS['card_border']}",
+                                             "backgroundColor": "#2a1f14"}))
+    sub_cells.append(html.Th("", style={**th_style, "borderBottom": f"1px solid {COLORS['card_border']}",
+                                         "backgroundColor": "#2a1f14"}))
+
+    # Linha de titulo de grupo
+    n_recent = len(recent_dates) + 1  # +1 para total
+    n_forecast = len(forecast_dates) + 1
+    group_header = html.Tr([
+        html.Th("", style={**th_style, "borderBottom": "none"}),
+        html.Th("VENDAS RECENTES", colSpan=n_recent,
+                style={**th_style, "borderBottom": "none", "color": COLORS["accent"],
+                       "fontSize": "11px", "backgroundColor": "#1a2332"}),
+        html.Th("", style={**th_style, "width": "4px", "padding": "0", "borderBottom": "none",
+                            "backgroundColor": COLORS["accent"], "minWidth": "4px"}),
+        html.Th("PREVISAO", colSpan=n_forecast,
+                style={**th_style, "borderBottom": "none", "color": COLORS["accent2"],
+                       "fontSize": "11px", "backgroundColor": "#2a1f14"}),
+    ])
+
+    # Linhas
+    body_rows = []
+    for r in rows_data:
+        name = r["name"]
+        if len(name) > 45:
+            name = name[:42] + "..."
+
+        cells = [html.Td(name, style={**td_style, "textAlign": "left", "fontWeight": "500"})]
+
+        # Vendas recentes
+        for d in recent_dates:
+            val = r["recent_sales"].get(d, 0)
+            bg = "#1a2332"
+            if val > 0:
+                intensity = min(val / 5, 1)
+                bg = f"rgba(88, 166, 255, {0.08 + intensity * 0.2})"
+            cells.append(html.Td(
+                str(val) if val > 0 else "-",
+                style={**td_style, "backgroundColor": bg,
+                       "color": COLORS["accent"] if val > 0 else COLORS["text_muted"],
+                       "fontWeight": "600" if val > 0 else "400"},
+            ))
+
+        # Total recente
+        tr = r["total_recent_7d"]
+        cells.append(html.Td(
+            str(tr) if tr > 0 else "-",
+            style={**td_style, "fontWeight": "700",
+                   "color": COLORS["accent"] if tr > 0 else COLORS["text_muted"],
+                   "backgroundColor": "#1a2332"},
+        ))
+
+        # Separador
+        cells.append(html.Td("", style={**td_style, "width": "4px", "padding": "0",
+                                         "backgroundColor": COLORS["accent"], "minWidth": "4px"}))
+
+        # Previsao
+        for d in forecast_dates:
+            val = r["forecast"].get(d, 0)
+            bg = "#2a1f14"
+            if val > 0.1:
+                intensity = min(val / 5, 1)
+                bg = f"rgba(249, 115, 22, {0.08 + intensity * 0.2})"
+            cells.append(html.Td(
+                f"{val:.1f}" if val > 0.05 else "-",
+                style={**td_style, "backgroundColor": bg,
+                       "color": COLORS["accent2"] if val > 0.05 else COLORS["text_muted"],
+                       "fontWeight": "600" if val > 0.05 else "400"},
+            ))
+
+        # Total previsao
+        tp = r["total_prev_7d"]
+        cells.append(html.Td(
+            f"{tp:.1f}" if tp > 0.05 else "-",
+            style={**td_style, "fontWeight": "700",
+                   "color": COLORS["accent2"] if tp > 0.05 else COLORS["text_muted"],
+                   "backgroundColor": "#2a1f14"},
+        ))
+
+        body_rows.append(html.Tr(cells))
+
+    return html.Table(
+        [html.Thead([group_header, html.Tr(header_cells)]), html.Tbody(body_rows)],
+        style={"width": "100%", "borderCollapse": "collapse", "tableLayout": "auto"},
+    )
+
+
+# --- Atualizar dropdown de produtos baseado nas categorias e tab ---
 @callback(
     Output("product-selector", "options"),
     Output("product-selector", "value"),
     Input("category-filter", "value"),
+    Input("event-tabs", "value"),
 )
-def update_product_options(selected_cats):
+def update_product_options(selected_cats, tab_value):
     if not selected_cats:
         return [], None
     filtered = filter_by_categories(product_sales, selected_cats, product_cat_map)
+    filtered = filter_by_event_tab(filtered, tab_value)
     options = [
         {"label": f"{r['product_name']}  ({int(r['quantity_sold'])} vendidos)",
          "value": str(r["product_id"])}
@@ -384,15 +724,19 @@ def update_product_options(selected_cats):
     Output("category-timeline", "figure"),
     Input("category-filter", "value"),
     Input("time-granularity", "value"),
+    Input("event-tabs", "value"),
 )
-def update_category_timeline(selected_cats, granularity):
+def update_category_timeline(selected_cats, granularity, tab_value):
     fig = go.Figure()
     if not selected_cats:
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
+    # Filtrar por tab
+    filtered_hist = filter_by_event_tab(hist_df, tab_value)
+
     # Explodir categorias para agrupar corretamente por categoria individual
-    exploded = explode_categories(hist_df)
+    exploded = explode_categories(filtered_hist)
     exploded = exploded[exploded["cat_single"].isin(selected_cats)]
 
     for i, cat in enumerate(selected_cats):
@@ -427,16 +771,21 @@ def update_category_timeline(selected_cats, granularity):
 @callback(
     Output("category-forecast", "figure"),
     Input("category-filter", "value"),
+    Input("event-tabs", "value"),
 )
-def update_category_forecast(selected_cats):
+def update_category_forecast(selected_cats, tab_value):
     fig = go.Figure()
     if not selected_cats:
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
+    # Filtrar por tab
+    filtered_hist = filter_by_event_tab(hist_df, tab_value)
+    filtered_pred = filter_by_event_tab(pred_df, tab_value)
+
     # Explodir historico e previsao
-    hist_exp = explode_categories(hist_df)
-    pred_exp = explode_categories(pred_df)
+    hist_exp = explode_categories(filtered_hist)
+    pred_exp = explode_categories(filtered_pred)
 
     for i, cat in enumerate(selected_cats):
         # Historico agregado por categoria
@@ -481,14 +830,16 @@ def update_category_forecast(selected_cats):
 @callback(
     Output("top-products-chart", "figure"),
     Input("category-filter", "value"),
+    Input("event-tabs", "value"),
 )
-def update_top_products(selected_cats):
+def update_top_products(selected_cats, tab_value):
     fig = go.Figure()
     if not selected_cats:
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
     filtered = filter_by_categories(product_sales, selected_cats, product_cat_map)
+    filtered = filter_by_event_tab(filtered, tab_value)
     filtered = filtered.head(15).iloc[::-1]
 
     fig.add_trace(go.Bar(
@@ -584,14 +935,16 @@ def update_product_forecast(product_id):
 @callback(
     Output("monthly-revenue", "figure"),
     Input("category-filter", "value"),
+    Input("event-tabs", "value"),
 )
-def update_monthly_revenue(selected_cats):
+def update_monthly_revenue(selected_cats, tab_value):
     fig = go.Figure()
     if not selected_cats:
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
     filtered = filter_by_categories(hist_df, selected_cats, product_cat_map).copy()
+    filtered = filter_by_event_tab(filtered, tab_value)
     filtered["month"] = filtered["order_date"].dt.to_period("M").apply(lambda r: r.start_time)
     monthly = filtered.groupby("month")["revenue"].sum().reset_index()
 
@@ -608,8 +961,9 @@ def update_monthly_revenue(selected_cats):
 @callback(
     Output("weekday-chart", "figure"),
     Input("category-filter", "value"),
+    Input("event-tabs", "value"),
 )
-def update_weekday_chart(selected_cats):
+def update_weekday_chart(selected_cats, tab_value):
     fig = go.Figure()
     if not selected_cats:
         fig.update_layout(**PLOT_LAYOUT)
@@ -617,6 +971,7 @@ def update_weekday_chart(selected_cats):
 
     weekday_names = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sab", "Dom"]
     filtered = filter_by_categories(hist_df, selected_cats, product_cat_map).copy()
+    filtered = filter_by_event_tab(filtered, tab_value)
     filtered["weekday"] = filtered["order_date"].dt.dayofweek
     wd = filtered.groupby("weekday")["quantity_sold"].sum().reset_index()
     wd["weekday_name"] = wd["weekday"].map(lambda x: weekday_names[x])
@@ -636,13 +991,15 @@ def update_weekday_chart(selected_cats):
 @callback(
     Output("metrics-table", "children"),
     Input("category-filter", "value"),
+    Input("event-tabs", "value"),
 )
-def update_metrics_table(selected_cats):
+def update_metrics_table(selected_cats, tab_value):
     if not selected_cats:
         return html.P("Selecione ao menos uma categoria.", style={"color": COLORS["text_muted"]})
 
     # Filtrar metricas por categorias (multi-categoria)
     filtered_metrics = filter_by_categories(metrics_df, selected_cats, product_cat_map)
+    filtered_metrics = filter_by_event_tab(filtered_metrics, tab_value)
 
     if filtered_metrics.empty:
         return html.P("Nenhum produto encontrado nas categorias selecionadas.", style={"color": COLORS["text_muted"]})
@@ -666,6 +1023,7 @@ def update_metrics_table(selected_cats):
 
     # Juntar com previsao total
     filtered_pred = filter_by_categories(pred_df, selected_cats, product_cat_map)
+    filtered_pred = filter_by_event_tab(filtered_pred, tab_value)
     pred_summary = (
         filtered_pred
         .groupby("product_id")

@@ -66,8 +66,18 @@ def fetch_all_pages(endpoint: str, extra_params: dict | None = None) -> list:
     return all_data
 
 
+def _extract_meta(meta_list, key):
+    """Extrai um valor de meta_data por chave."""
+    if not isinstance(meta_list, list):
+        return None
+    for m in meta_list:
+        if m.get("key") == key:
+            return m.get("value")
+    return None
+
+
 def fetch_products() -> pd.DataFrame:
-    """Busca todos os produtos da loja."""
+    """Busca todos os produtos da loja, incluindo datas de evento."""
     print("\n[*] Buscando produtos...")
     products = fetch_all_pages("products")
     df = pd.DataFrame(products)
@@ -77,10 +87,11 @@ def fetch_products() -> pd.DataFrame:
         return df
 
     cols = ["id", "name", "price", "regular_price", "sale_price",
-            "total_sales", "stock_quantity", "categories", "status"]
+            "total_sales", "stock_quantity", "categories", "status", "meta_data"]
     available_cols = [c for c in cols if c in df.columns]
     df = df[available_cols]
 
+    # Extrair categorias
     if "categories" in df.columns:
         df["category"] = df["categories"].apply(
             lambda cats: "|".join(c["name"] for c in cats)
@@ -89,7 +100,21 @@ def fetch_products() -> pd.DataFrame:
         )
         df.drop(columns=["categories"], inplace=True)
 
-    print(f"  Total: {len(df)} produtos encontrados.")
+    # Extrair datas de ticket/evento do meta_data
+    if "meta_data" in df.columns:
+        df["ticket_start_date"] = df["meta_data"].apply(
+            lambda m: _extract_meta(m, "_ticket_start_date")
+        )
+        df["ticket_end_date"] = df["meta_data"].apply(
+            lambda m: _extract_meta(m, "_ticket_end_date")
+        )
+        df["event_id"] = df["meta_data"].apply(
+            lambda m: _extract_meta(m, "_tribe_wooticket_for_event")
+        )
+        df.drop(columns=["meta_data"], inplace=True)
+
+    n_with_dates = df["ticket_end_date"].notna().sum() if "ticket_end_date" in df.columns else 0
+    print(f"  Total: {len(df)} produtos encontrados ({n_with_dates} com data de evento).")
     return df
 
 
@@ -126,11 +151,23 @@ def build_sales_dataframe(orders_df: pd.DataFrame, products_df: pd.DataFrame) ->
 
     cat_map = {}
     name_map = {}
+    end_date_map = {}
+    start_date_map = {}
     if not products_df.empty:
         if "id" in products_df.columns and "category" in products_df.columns:
             cat_map = dict(zip(products_df["id"], products_df["category"]))
         if "id" in products_df.columns and "name" in products_df.columns:
             name_map = dict(zip(products_df["id"], products_df["name"]))
+        if "id" in products_df.columns and "ticket_end_date" in products_df.columns:
+            end_date_map = {
+                k: v for k, v in zip(products_df["id"], products_df["ticket_end_date"])
+                if pd.notna(v) and str(v).strip() != ""
+            }
+        if "id" in products_df.columns and "ticket_start_date" in products_df.columns:
+            start_date_map = {
+                k: v for k, v in zip(products_df["id"], products_df["ticket_start_date"])
+                if pd.notna(v) and str(v).strip() != ""
+            }
 
     rows = []
     for _, order in orders_df.iterrows():
@@ -157,6 +194,8 @@ def build_sales_dataframe(orders_df: pd.DataFrame, products_df: pd.DataFrame) ->
                 "product_id": pid,
                 "product_name": pname,
                 "category": cat_map.get(pid, "Sem categoria"),
+                "ticket_end_date": end_date_map.get(pid, ""),
+                "ticket_start_date": start_date_map.get(pid, ""),
                 "quantity": qty,
                 "total": total,
             })
@@ -175,6 +214,8 @@ def build_sales_dataframe(orders_df: pd.DataFrame, products_df: pd.DataFrame) ->
         .agg(
             product_name=("product_name", "first"),
             category=("category", "first"),
+            ticket_end_date=("ticket_end_date", "first"),
+            ticket_start_date=("ticket_start_date", "first"),
             quantity_sold=("quantity", "sum"),
             revenue=("total", "sum"),
         )
@@ -383,6 +424,14 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = FORECAST_D
     model_metrics = []
     total = len(active_pids)
 
+    # Mapa de ticket_end_date por product_id
+    end_date_by_pid = {}
+    if "ticket_end_date" in daily_sales.columns:
+        for pid_val, grp in daily_sales.groupby("product_id"):
+            val = grp["ticket_end_date"].dropna().iloc[0] if grp["ticket_end_date"].notna().any() else ""
+            if str(val).strip():
+                end_date_by_pid[pid_val] = str(val).strip()
+
     for idx, pid in enumerate(sorted(active_pids), 1):
         product_data = daily_sales[daily_sales["product_id"] == pid].copy()
         if product_data.empty:
@@ -390,6 +439,7 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = FORECAST_D
 
         pname = product_data["product_name"].iloc[-1]
         cat = product_data["category"].iloc[-1]
+        t_end = end_date_by_pid.get(pid, "")
 
         # Preparar dados para Prophet
         prophet_data = prepare_prophet_data(product_data, today)
@@ -402,7 +452,9 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = FORECAST_D
                 prophet_data, pname, cat, pid, forecast_days, today
             )
             if future_df is not None and not future_df.empty:
+                future_df["ticket_end_date"] = t_end
                 results.append(future_df)
+                metrics["ticket_end_date"] = t_end
                 model_metrics.append(metrics)
                 avg = future_df["predicted_quantity"].mean()
                 print(f"  [{idx}/{total}] [Prophet] {pname[:50]}: {avg:.2f}/dia | MAE={metrics['mae']:.2f} | R2={metrics['r2_score']:.3f} | {n_days}d ({n_nonzero} vendas)")
@@ -412,7 +464,9 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = FORECAST_D
                 product_data, pname, cat, pid, forecast_days, today
             )
             if future_df is not None:
+                future_df["ticket_end_date"] = t_end
                 results.append(future_df)
+                metrics["ticket_end_date"] = t_end
                 model_metrics.append(metrics)
                 avg = future_df["predicted_quantity"].iloc[0]
                 print(f"  [{idx}/{total}] [Media]   {pname[:50]}: {avg:.2f}/dia | {n_nonzero} vendas")
