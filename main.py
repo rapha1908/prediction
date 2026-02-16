@@ -550,11 +550,15 @@ def main():
     else:
         print("  Nenhum pedido novo encontrado.")
 
-    # --- 3. Reagregar daily_sales ---
+    # --- 3. Geocodificar localizacoes de pedidos ---
+    print("\n[*] Geocodificando localizacoes de pedidos...")
+    db.geocode_new_orders()
+
+    # --- 4. Reagregar daily_sales ---
     print("\n[*] Atualizando vendas diarias agregadas...")
     db.refresh_daily_sales()
 
-    # --- 4. Carregar dados para treinamento ---
+    # --- 5. Carregar dados para treinamento ---
     daily_sales = db.load_daily_sales()
 
     if daily_sales.empty:
@@ -564,10 +568,10 @@ def main():
     print(f"\n[*] Dados carregados: {len(daily_sales)} registros, "
           f"{daily_sales['product_id'].nunique()} produtos")
 
-    # --- 5. Treinar Prophet e gerar previsoes ---
+    # --- 6. Treinar Prophet e gerar previsoes ---
     predictions_df, metrics_df = train_and_predict(daily_sales, forecast_days=FORECAST_DAYS)
 
-    # --- 6. Salvar previsoes no banco ---
+    # --- 7. Salvar previsoes no banco ---
     run_id = db.generate_run_id()
     print(f"\n[*] Salvando previsoes (run_id: {run_id})...")
 
@@ -582,12 +586,12 @@ def main():
         avg_count = (metrics_df["method"] == "weighted_average").sum()
         print(f"  Prophet: {prophet_count} | Media Ponderada: {avg_count}")
 
-    # --- 7. Graficos e resumo ---
+    # --- 8. Graficos e resumo ---
     print("\n[*] Gerando graficos de previsao...")
     plot_predictions(daily_sales, predictions_df)
     print_forecast_summary(predictions_df, metrics_df)
 
-    # --- 8. Tambem salvar CSVs (compatibilidade) ---
+    # --- 9. Tambem salvar CSVs (compatibilidade) ---
     daily_sales.to_csv("vendas_historicas.csv", index=False)
     print("\n[OK] CSV de historico salvo: vendas_historicas.csv")
 

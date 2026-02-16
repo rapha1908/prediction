@@ -135,6 +135,44 @@ except Exception as _e:
     print(f"  [WARNING] Could not load low stock data: {_e}")
     low_stock_df = pd.DataFrame(columns=["product_id", "product_name", "category", "stock_quantity", "status", "price"])
 
+# ============================================================
+# GEO / SALES MAP DATA
+# ============================================================
+try:
+    import db as _db_geo
+    geo_sales_df = _db_geo.load_sales_by_location()
+    print(f"  [OK] Geo sales loaded: {len(geo_sales_df)} rows")
+except Exception as _e:
+    print(f"  [WARNING] Could not load geo sales: {_e}")
+    geo_sales_df = pd.DataFrame(columns=[
+        "country", "state", "city", "product_id", "product_name",
+        "category", "quantity_sold", "revenue", "currency",
+    ])
+
+# Load geocache (fast DB read, no API calls) and join with sales data
+if not geo_sales_df.empty:
+    try:
+        _geo_cache = _db_geo.load_geocache()
+        print(f"  [OK] Geocache loaded: {len(_geo_cache)} cached locations")
+    except Exception as _ge:
+        print(f"  [WARNING] Could not load geocache: {_ge}")
+        _geo_cache = {}
+
+    if _geo_cache:
+        def _apply_geocode(row):
+            key = f"{str(row['country']).strip()}|{str(row['state']).strip()}|{str(row['city']).strip()}"
+            coords = _geo_cache.get(key)
+            if coords:
+                return pd.Series(coords, index=["lat", "lng"])
+            return pd.Series([None, None], index=["lat", "lng"])
+
+        geo_sales_df[["lat", "lng"]] = geo_sales_df.apply(_apply_geocode, axis=1)
+        geo_sales_df = geo_sales_df.dropna(subset=["lat", "lng"])
+        print(f"  [OK] Geocoded: {len(geo_sales_df)} location rows")
+    else:
+        geo_sales_df = geo_sales_df.iloc[0:0]
+        print("  [INFO] No geocache data. Run 'py main.py' to geocode locations.")
+
 
 # ============================================================
 # MULTI-CATEGORY HELPERS
@@ -706,8 +744,53 @@ app.layout = html.Div(
                                         "fontFamily": FONT, "fontSize": "13px", "fontWeight": "700",
                                         "letterSpacing": "0.5px", "textTransform": "uppercase"},
                     ),
+                    dcc.Tab(
+                        label="Sales Map",
+                        value="map",
+                        style={"backgroundColor": COLORS["bg"], "color": COLORS["text_muted"],
+                               "border": f"1px solid {COLORS['card_border']}", "borderRadius": "8px 8px 0 0",
+                               "padding": "12px 28px", "fontFamily": FONT, "fontSize": "13px", "fontWeight": "500",
+                               "letterSpacing": "0.5px", "textTransform": "uppercase"},
+                        selected_style={"backgroundColor": COLORS["card"], "color": "#6ea8d9",
+                                        "border": f"1px solid {COLORS['card_border']}", "borderBottom": "none",
+                                        "borderRadius": "8px 8px 0 0", "padding": "12px 28px",
+                                        "fontFamily": FONT, "fontSize": "13px", "fontWeight": "700",
+                                        "letterSpacing": "0.5px", "textTransform": "uppercase"},
+                    ),
                 ],
             ),
+
+            # ============ SALES MAP SECTION ============
+            html.Div(id="map-section", style={"display": "none"}, children=[
+                html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                    section_label("GEOGRAPHY"),
+                    html.H3("Sales Map", style={
+                        "margin": "0 0 14px", "fontSize": "18px", "fontWeight": "700",
+                    }),
+                    html.Div(style={"display": "flex", "gap": "16px", "marginBottom": "18px", "flexWrap": "wrap"}, children=[
+                        html.Div(style={"minWidth": "280px", "flex": "1"}, children=[
+                            html.Label("Filter by Product:", style={
+                                "fontSize": "13px", "color": COLORS["text_muted"],
+                                "marginBottom": "4px", "display": "block",
+                            }),
+                            dcc.Dropdown(
+                                id="map-product-filter",
+                                options=[],
+                                value=[],
+                                multi=True,
+                                placeholder="All products (select to filter)...",
+                                style={
+                                    "backgroundColor": COLORS["bg"], "color": COLORS["text"],
+                                    "border": f"1px solid {COLORS['card_border']}",
+                                    "borderRadius": "8px", "fontSize": "13px",
+                                },
+                            ),
+                        ]),
+                    ]),
+                    dcc.Graph(id="sales-map", config={"displayModeBar": True, "scrollZoom": True},
+                              style={"height": "600px"}),
+                ]),
+            ]),
 
             # ============ REPORTE DIARIO ============
             html.Div(style=card_style({"marginBottom": "28px"}), children=[
@@ -872,8 +955,9 @@ app.layout = html.Div(
 # ============================================================
 
 def filter_by_event_tab(df, tab_value):
-    """Filter DataFrame by event status (active/past/course) based on the tab."""
-    if "product_id" not in df.columns:
+    """Filter DataFrame by event status (active/past/course) based on the tab.
+    When tab is 'map', show all products (no event filter)."""
+    if tab_value == "map" or "product_id" not in df.columns:
         return df
     pids = {pid for pid, st in event_status_map.items() if st == tab_value}
     return df[df["product_id"].isin(pids)]
@@ -959,7 +1043,7 @@ def update_kpis(tab_value, selected_currencies):
     )) if not fh.empty else 0
     pred_total = fp["predicted_quantity"].sum() if not fp.empty else 0
 
-    tab_labels = {"active": "Active", "past": "Past", "course": "Online Courses"}
+    tab_labels = {"active": "Active", "past": "Past", "course": "Online Courses", "map": "All (Map)"}
     tab_label = tab_labels.get(tab_value, tab_value)
 
     return [
@@ -1814,6 +1898,152 @@ def handle_chat(send_clicks, n_submit, daily_clicks, weekly_clicks,
         bubbles.append(_make_message_bubble(msg["role"], display_text))
 
     return bubbles, new_history, ""
+
+
+# ============================================================
+# SALES MAP
+# ============================================================
+
+@callback(
+    Output("map-section", "style"),
+    Input("event-tabs", "value"),
+)
+def toggle_map_section(tab_value):
+    """Show map section only when the map tab is active."""
+    if tab_value == "map":
+        return {"display": "block", "marginTop": "24px"}
+    return {"display": "none"}
+
+
+@callback(
+    Output("map-product-filter", "options"),
+    Output("map-product-filter", "value"),
+    Input("event-tabs", "value"),
+)
+def update_map_product_options(tab_value):
+    """Populate the product filter dropdown for the map."""
+    if tab_value != "map" or geo_sales_df.empty:
+        return [], []
+    products = (
+        geo_sales_df.groupby(["product_id", "product_name"])["quantity_sold"]
+        .sum().reset_index()
+        .sort_values("quantity_sold", ascending=False)
+    )
+    opts = [
+        {"label": f"{r['product_name']} ({int(r['quantity_sold'])} sold)", "value": int(r["product_id"])}
+        for _, r in products.iterrows()
+    ]
+    return opts, []
+
+
+@callback(
+    Output("sales-map", "figure"),
+    Input("event-tabs", "value"),
+    Input("map-product-filter", "value"),
+)
+def update_sales_map(tab_value, selected_products):
+    """Render interactive Mapbox map with sales locations."""
+    fig = go.Figure()
+
+    # Mapbox-compatible layout (no xaxis/yaxis/hovermode)
+    _map_base = dict(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT, color=COLORS["text"], size=12),
+        mapbox=dict(
+            style="carto-darkmatter",
+            center=dict(lat=30, lon=0),
+            zoom=1,
+        ),
+        margin=dict(l=0, r=0, t=30, b=0),
+        showlegend=False,
+    )
+
+    if tab_value != "map" or geo_sales_df.empty:
+        fig.update_layout(**_map_base)
+        return fig
+
+    df = geo_sales_df.copy()
+
+    # Filter by selected products if any
+    if selected_products:
+        df = df[df["product_id"].isin(selected_products)]
+
+    if df.empty:
+        fig.update_layout(**_map_base)
+        return fig
+
+    # Aggregate by location + category for coloring
+    agg = (
+        df.groupby(["country", "state", "city", "lat", "lng", "category"])
+        .agg(quantity_sold=("quantity_sold", "sum"), revenue=("revenue", "sum"))
+        .reset_index()
+    )
+
+    # Extract top-level category for color grouping
+    agg["cat_label"] = agg["category"].apply(
+        lambda c: str(c).split("|")[0].strip() if pd.notna(c) else "Other"
+    )
+
+    # Get unique categories for consistent coloring
+    unique_cats = sorted(agg["cat_label"].unique())
+    _PALETTE = [
+        "#c8a44e", "#5aaa88", "#b87348", "#6ea8d9", "#e05555",
+        "#a67ed6", "#e0a030", "#4ecdc4", "#ff6b6b", "#95e667",
+        "#ff9ff3", "#54a0ff", "#feca57", "#ff9f43", "#00d2d3",
+    ]
+    cat_colors = {cat: _PALETTE[i % len(_PALETTE)] for i, cat in enumerate(unique_cats)}
+
+    for cat in unique_cats:
+        cat_data = agg[agg["cat_label"] == cat]
+        fig.add_trace(go.Scattermapbox(
+            lat=cat_data["lat"],
+            lon=cat_data["lng"],
+            text=cat_data.apply(
+                lambda r: (
+                    f"<b>{r['city']}, {r['state']}</b> ({r['country']})<br>"
+                    f"Category: {r['category']}<br>"
+                    f"Qty: {int(r['quantity_sold'])}<br>"
+                    f"Revenue: {r['revenue']:,.2f}"
+                ), axis=1,
+            ),
+            hoverinfo="text",
+            marker=dict(
+                size=cat_data["quantity_sold"].clip(lower=5).apply(lambda x: min(x * 0.7 + 5, 35)),
+                color=cat_colors[cat],
+                opacity=0.75,
+                sizemode="diameter",
+            ),
+            name=cat[:30],
+        ))
+
+    # Auto-center on the data
+    center_lat = agg["lat"].mean()
+    center_lon = agg["lng"].mean()
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT, color=COLORS["text"], size=12),
+        showlegend=True,
+        legend=dict(
+            font=dict(size=11, color=COLORS["text"]),
+            bgcolor="rgba(20,18,30,0.8)",
+            bordercolor=COLORS["card_border"],
+            borderwidth=1,
+            orientation="h",
+            yanchor="bottom", y=1.02,
+            xanchor="left", x=0,
+        ),
+        mapbox=dict(
+            style="carto-darkmatter",
+            center=dict(lat=center_lat, lon=center_lon),
+            zoom=1.5,
+        ),
+        margin=dict(l=0, r=0, t=30, b=0),
+    )
+
+    return fig
 
 
 # ============================================================

@@ -89,6 +89,9 @@ CREATE TABLE IF NOT EXISTS orders (
     total           NUMERIC(12, 2) NOT NULL DEFAULT 0,
     currency        TEXT NOT NULL DEFAULT 'USD',
     order_status    TEXT,
+    billing_country TEXT,
+    billing_state   TEXT,
+    billing_city    TEXT,
     synced_at       TIMESTAMP DEFAULT NOW(),
     UNIQUE (order_id, product_id)
 );
@@ -147,6 +150,15 @@ CREATE TABLE IF NOT EXISTS prediction_metrics (
 );
 
 CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON prediction_metrics (run_id);
+
+-- Cache de geocoding (evita chamadas repetidas ao Google Maps)
+CREATE TABLE IF NOT EXISTS geocache (
+    location_key    TEXT PRIMARY KEY,
+    lat             DOUBLE PRECISION,
+    lng             DOUBLE PRECISION,
+    formatted_addr  TEXT,
+    created_at      TIMESTAMP DEFAULT NOW()
+);
 """
 
 
@@ -159,6 +171,19 @@ BEGIN
         WHERE table_name = 'orders' AND column_name = 'currency'
     ) THEN
         ALTER TABLE orders ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
+    END IF;
+END $$;
+
+-- Add billing location columns to orders (if missing)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orders' AND column_name = 'billing_country'
+    ) THEN
+        ALTER TABLE orders ADD COLUMN billing_country TEXT;
+        ALTER TABLE orders ADD COLUMN billing_state TEXT;
+        ALTER TABLE orders ADD COLUMN billing_city TEXT;
     END IF;
 END $$;
 
@@ -307,6 +332,10 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
         order_date = order.get("date_created")
         order_status = order.get("status", "")
         order_currency = order.get("currency", "USD")
+        billing = order.get("billing", {})
+        b_country = billing.get("country", "") or ""
+        b_state = billing.get("state", "") or ""
+        b_city = billing.get("city", "") or ""
         if not order_id or not order_date:
             continue
 
@@ -348,7 +377,8 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
                 items_by_pid[pid] = (qty, total, pname)
 
         for pid, (qty, total, pname) in items_by_pid.items():
-            rows.append((order_id, od, ot, pid, pname, qty, total, order_currency, order_status))
+            rows.append((order_id, od, ot, pid, pname, qty, total,
+                         order_currency, order_status, b_country, b_state, b_city))
 
     if not rows:
         return 0
@@ -359,11 +389,15 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
         with conn.cursor() as cur:
             sql = """
                 INSERT INTO orders (order_id, order_date, order_time, product_id,
-                                    product_name, quantity, total, currency, order_status)
+                                    product_name, quantity, total, currency, order_status,
+                                    billing_country, billing_state, billing_city)
                 VALUES %s
                 ON CONFLICT (order_id, product_id) DO UPDATE SET
                     currency = EXCLUDED.currency,
-                    order_time = EXCLUDED.order_time
+                    order_time = EXCLUDED.order_time,
+                    billing_country = EXCLUDED.billing_country,
+                    billing_state = EXCLUDED.billing_state,
+                    billing_city = EXCLUDED.billing_city
             """
             execute_values(cur, sql, rows, page_size=500)
             inserted = cur.rowcount
@@ -466,6 +500,30 @@ def load_hourly_sales() -> pd.DataFrame:
     return df
 
 
+def load_sales_by_location() -> pd.DataFrame:
+    """Carrega vendas agregadas por pais/estado/cidade com info de produto."""
+    engine = _get_engine()
+    df = pd.read_sql("""
+        SELECT
+            o.billing_country AS country,
+            o.billing_state   AS state,
+            o.billing_city    AS city,
+            o.product_id,
+            COALESCE(p.name, o.product_name) AS product_name,
+            COALESCE(p.category, 'Sem categoria') AS category,
+            SUM(o.quantity)     AS quantity_sold,
+            SUM(o.total::float) AS revenue,
+            o.currency
+        FROM orders o
+        LEFT JOIN products p ON p.id = o.product_id
+        WHERE o.billing_country IS NOT NULL
+          AND o.billing_country != ''
+        GROUP BY 1, 2, 3, 4, 5, 6, 9
+        ORDER BY quantity_sold DESC
+    """, engine)
+    return df
+
+
 def load_low_stock(threshold: int = 5) -> pd.DataFrame:
     """Retorna produtos com stock_quantity < threshold (e não nulo)."""
     engine = _get_engine()
@@ -478,6 +536,178 @@ def load_low_stock(threshold: int = 5) -> pd.DataFrame:
         ORDER BY stock_quantity ASC, name ASC
     """, engine, params={"threshold": threshold})
     return df
+
+
+# ============================================================
+# GEOCODING (Google Maps API + cache)
+# ============================================================
+
+def _geocache_lookup(keys: list[str]) -> dict[str, tuple[float, float]]:
+    """Busca coordenadas já cacheadas no banco."""
+    if not keys:
+        return {}
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT location_key, lat, lng FROM geocache WHERE location_key = ANY(%s)",
+                (keys,),
+            )
+            return {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def _geocache_save(location_key: str, lat: float, lng: float, formatted_addr: str = ""):
+    """Salva resultado de geocoding no cache."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO geocache (location_key, lat, lng, formatted_addr)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (location_key) DO UPDATE SET
+                    lat = EXCLUDED.lat, lng = EXCLUDED.lng,
+                    formatted_addr = EXCLUDED.formatted_addr
+            """, (location_key, lat, lng, formatted_addr))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _ensure_geocache_table():
+    """Cria a tabela geocache se nao existir."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS geocache (
+                    location_key    TEXT PRIMARY KEY,
+                    lat             DOUBLE PRECISION,
+                    lng             DOUBLE PRECISION,
+                    formatted_addr  TEXT,
+                    created_at      TIMESTAMP DEFAULT NOW()
+                )
+            """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_geocache() -> dict[str, tuple[float, float]]:
+    """Carrega todo o cache de geocoding do banco (leitura rapida, sem API calls)."""
+    _ensure_geocache_table()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT location_key, lat, lng FROM geocache WHERE lat != 0 OR lng != 0")
+            return {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def _geocode_single(args):
+    """Geocode a single location (used by thread pool)."""
+    import requests as _req
+    key, country, state, city, api_key = args
+    parts = [p for p in [city, state, country] if p]
+    address = ", ".join(parts)
+    try:
+        resp = _req.get(
+            "https://maps.googleapis.com/maps/api/geocode/json",
+            params={"address": address, "key": api_key},
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("status") == "OK" and data.get("results"):
+            loc = data["results"][0]["geometry"]["location"]
+            fmt = data["results"][0].get("formatted_address", "")
+            return key, loc["lat"], loc["lng"], fmt
+        return key, 0.0, 0.0, f"FAILED:{data.get('status', 'UNKNOWN')}"
+    except Exception:
+        return key, None, None, None
+
+
+def geocode_new_orders():
+    """
+    Geocodifica localizacoes de pedidos que ainda nao estao no cache.
+    Usa threads paralelas para velocidade. Chamado durante sync (main.py).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    _ensure_geocache_table()
+
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    if not api_key:
+        print("  [WARNING] GOOGLE_MAPS_API_KEY not set, skipping geocoding.")
+        return 0
+
+    # Get unique locations from orders that are not yet cached
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT billing_country, billing_state, billing_city
+                FROM orders
+                WHERE billing_country IS NOT NULL AND billing_country != ''
+            """)
+            all_locs = cur.fetchall()
+    finally:
+        conn.close()
+
+    if not all_locs:
+        return 0
+
+    unique = {}
+    for country, state, city in all_locs:
+        c = str(country or "").strip()
+        s = str(state or "").strip()
+        ci = str(city or "").strip()
+        key = f"{c}|{s}|{ci}"
+        if key not in unique and c:
+            unique[key] = (c, s, ci)
+
+    # Check which ones are already cached
+    cached = _geocache_lookup(list(unique.keys()))
+    to_geocode = {k: v for k, v in unique.items() if k not in cached}
+
+    if not to_geocode:
+        print(f"  [Geocoding] All {len(cached)} locations already cached.")
+        return 0
+
+    total = len(to_geocode)
+    print(f"  [Geocoding] {total} new locations to resolve ({len(cached)} cached)...")
+
+    # Build task list
+    tasks = [
+        (key, country, state, city, api_key)
+        for key, (country, state, city) in to_geocode.items()
+    ]
+
+    ok_count = 0
+    fail_count = 0
+    done = 0
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_geocode_single, t): t[0] for t in tasks}
+        for future in as_completed(futures):
+            result = future.result()
+            done += 1
+            if result is None or result[1] is None:
+                fail_count += 1
+            else:
+                key, lat, lng, fmt = result
+                _geocache_save(key, lat, lng, fmt or "")
+                if lat != 0.0 or lng != 0.0:
+                    ok_count += 1
+                else:
+                    fail_count += 1
+
+            if done % 100 == 0 or done == total:
+                print(f"    [{done}/{total}] OK: {ok_count} | Failed: {fail_count}")
+
+    print(f"  [Geocoding] Done: {ok_count} resolved, {fail_count} failed out of {total}.")
+    return ok_count
 
 
 # ============================================================
