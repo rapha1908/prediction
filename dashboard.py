@@ -769,6 +769,24 @@ app.layout = html.Div(
                     }),
                     html.Div(style={"display": "flex", "gap": "16px", "marginBottom": "18px", "flexWrap": "wrap"}, children=[
                         html.Div(style={"minWidth": "280px", "flex": "1"}, children=[
+                            html.Label("Filter by Category:", style={
+                                "fontSize": "13px", "color": COLORS["text_muted"],
+                                "marginBottom": "4px", "display": "block",
+                            }),
+                            dcc.Dropdown(
+                                id="map-category-filter",
+                                options=[],
+                                value=[],
+                                multi=True,
+                                placeholder="All categories (select to filter)...",
+                                style={
+                                    "backgroundColor": COLORS["bg"], "color": COLORS["text"],
+                                    "border": f"1px solid {COLORS['card_border']}",
+                                    "borderRadius": "8px", "fontSize": "13px",
+                                },
+                            ),
+                        ]),
+                        html.Div(style={"minWidth": "280px", "flex": "1"}, children=[
                             html.Label("Filter by Product:", style={
                                 "fontSize": "13px", "color": COLORS["text_muted"],
                                 "marginBottom": "4px", "display": "block",
@@ -1916,32 +1934,56 @@ def toggle_map_section(tab_value):
 
 
 @callback(
+    Output("map-category-filter", "options"),
+    Input("event-tabs", "value"),
+)
+def update_map_cat_options(tab_value):
+    """Populate category filter for the map."""
+    if tab_value != "map" or geo_sales_df.empty:
+        return []
+    all_cats = sorted(set(
+        cat
+        for cats_str in geo_sales_df["category"].dropna().unique()
+        for cat in parse_categories(cats_str)
+    ))
+    return [{"label": c, "value": c} for c in all_cats]
+
+
+@callback(
     Output("map-product-filter", "options"),
     Output("map-product-filter", "value"),
     Input("event-tabs", "value"),
+    Input("map-category-filter", "value"),
 )
-def update_map_product_options(tab_value):
-    """Populate the product filter dropdown for the map."""
+def update_map_product_options(tab_value, selected_map_cats):
+    """Populate product filter, filtered by selected categories."""
     if tab_value != "map" or geo_sales_df.empty:
         return [], []
+
+    df = geo_sales_df
+    if selected_map_cats:
+        geo_cat_map = build_product_cat_map(geo_sales_df)
+        df = filter_by_categories(geo_sales_df, selected_map_cats, geo_cat_map)
+
     products = (
-        geo_sales_df.groupby(["product_id", "product_name"])["quantity_sold"]
+        df.groupby(["product_id", "product_name"])["quantity_sold"]
         .sum().reset_index()
         .sort_values("quantity_sold", ascending=False)
     )
-    opts = [
+    prod_opts = [
         {"label": f"{r['product_name']} ({int(r['quantity_sold'])} sold)", "value": int(r["product_id"])}
         for _, r in products.iterrows()
     ]
-    return opts, []
+    return prod_opts, []
 
 
 @callback(
     Output("sales-map", "figure"),
     Input("event-tabs", "value"),
+    Input("map-category-filter", "value"),
     Input("map-product-filter", "value"),
 )
-def update_sales_map(tab_value, selected_products):
+def update_sales_map(tab_value, selected_map_cats, selected_products):
     """Render interactive Mapbox map with sales locations."""
     fig = go.Figure()
 
@@ -1965,6 +2007,11 @@ def update_sales_map(tab_value, selected_products):
 
     df = geo_sales_df.copy()
 
+    # Filter by selected categories (multi-category aware)
+    if selected_map_cats:
+        geo_cat_map = build_product_cat_map(geo_sales_df)
+        df = filter_by_categories(df, selected_map_cats, geo_cat_map)
+
     # Filter by selected products if any
     if selected_products:
         df = df[df["product_id"].isin(selected_products)]
@@ -1973,17 +2020,25 @@ def update_sales_map(tab_value, selected_products):
         fig.update_layout(**_map_base)
         return fig
 
-    # Aggregate by location + category for coloring
+    # Expand rows: one row per (location, individual category) for proper coloring
+    rows_expanded = []
+    for _, row in df.iterrows():
+        cats = parse_categories(row.get("category", ""))
+        # If filtering by cats, only keep matching ones for the label
+        if selected_map_cats:
+            cats = [c for c in cats if c in selected_map_cats] or cats[:1]
+        for cat in cats:
+            rows_expanded.append({**row.to_dict(), "_cat": cat})
+    exp_df = pd.DataFrame(rows_expanded)
+
+    # Aggregate by location + individual category
     agg = (
-        df.groupby(["country", "state", "city", "lat", "lng", "category"])
-        .agg(quantity_sold=("quantity_sold", "sum"), revenue=("revenue", "sum"))
+        exp_df.groupby(["country", "state", "city", "lat", "lng", "_cat"])
+        .agg(quantity_sold=("quantity_sold", "sum"), revenue=("revenue", "sum"),
+             category=("category", "first"))
         .reset_index()
     )
-
-    # Extract top-level category for color grouping
-    agg["cat_label"] = agg["category"].apply(
-        lambda c: str(c).split("|")[0].strip() if pd.notna(c) else "Other"
-    )
+    agg["cat_label"] = agg["_cat"]
 
     # Get unique categories for consistent coloring
     unique_cats = sorted(agg["cat_label"].unique())
