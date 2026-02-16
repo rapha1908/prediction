@@ -5,12 +5,14 @@
 *.html
 *.json
 *.xml
-*.yaml
-*.yml
 *.toml
 *.lock
 *.log
-*.txt
 *.md
 _check_db.py
+_debug_*.py
 __pycache__/
+
+# Keep essential files tracked
+!requirements.txt
+!render.yaml

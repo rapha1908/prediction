@@ -19,15 +19,25 @@ load_dotenv()
 # CONEXAO
 # ============================================================
 
-DB_CONFIG = {
-    "dbname": os.getenv("POSTGRES_DB", "prediction"),
-    "user": os.getenv("POSTGRES_USER", "prediction"),
-    "password": os.getenv("POSTGRES_PASSWORD", "prediction123"),
-    "host": os.getenv("POSTGRES_HOST", "localhost"),
-    "port": os.getenv("POSTGRES_PORT", "5432"),
-}
+# Support Render's DATABASE_URL (single connection string) or individual vars
+_DATABASE_URL = os.getenv("DATABASE_URL")
 
-_PG_URL = "postgresql://{user}:{password}@{host}:{port}/{dbname}".format(**DB_CONFIG)
+if _DATABASE_URL:
+    # Render provides postgres:// but SQLAlchemy needs postgresql://
+    if _DATABASE_URL.startswith("postgres://"):
+        _DATABASE_URL = _DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    _PG_URL = _DATABASE_URL
+    DB_CONFIG = None  # use connection string directly
+else:
+    DB_CONFIG = {
+        "dbname": os.getenv("POSTGRES_DB", "prediction"),
+        "user": os.getenv("POSTGRES_USER", "prediction"),
+        "password": os.getenv("POSTGRES_PASSWORD", "prediction123"),
+        "host": os.getenv("POSTGRES_HOST", "localhost"),
+        "port": os.getenv("POSTGRES_PORT", "5432"),
+    }
+    _PG_URL = "postgresql://{user}:{password}@{host}:{port}/{dbname}".format(**DB_CONFIG)
+
 _engine = None
 
 
@@ -41,7 +51,9 @@ def _get_engine():
 
 def get_connection():
     """Retorna uma conexao psycopg2 com o PostgreSQL (para escrita)."""
-    return psycopg2.connect(**DB_CONFIG)
+    if DB_CONFIG:
+        return psycopg2.connect(**DB_CONFIG)
+    return psycopg2.connect(_PG_URL)
 
 
 def test_connection() -> bool:

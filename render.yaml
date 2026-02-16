@@ -1,0 +1,63 @@
+databases:
+  - name: tcche-db
+    plan: free
+    databaseName: prediction
+    user: prediction
+
+services:
+  # Dashboard (Web Service)
+  - type: web
+    name: tcche-dashboard
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn dashboard:server --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tcche-db
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: RENDER
+        value: "true"
+      - key: WOOCOMMERCE_URL
+        sync: false
+      - key: WOOCOMMERCE_KEY
+        sync: false
+      - key: WOOCOMMERCE_SECRET
+        sync: false
+      - key: OpenAI_API_KEY
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: DISPLAY_CURRENCY
+        value: "USD"
+
+  # Data sync cron job (runs main.py daily)
+  - type: cron
+    name: tcche-sync
+    runtime: python
+    plan: free
+    schedule: "0 6 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tcche-db
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: WOOCOMMERCE_URL
+        sync: false
+      - key: WOOCOMMERCE_KEY
+        sync: false
+      - key: WOOCOMMERCE_SECRET
+        sync: false
+      - key: OpenAI_API_KEY
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: DISPLAY_CURRENCY
+        value: "USD"

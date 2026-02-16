@@ -2605,6 +2605,11 @@ def reload_after_sync(trigger):
 # RUN
 # ============================================================
 
+# Expose the Flask server for gunicorn (production)
+server = app.server
+
 if __name__ == "__main__":
-    print("\n  Dashboard available at: http://localhost:8050\n")
-    app.run(debug=True, port=8050)
+    port = int(os.environ.get("PORT", 8050))
+    debug = os.environ.get("RENDER") is None  # disable debug in production
+    print(f"\n  Dashboard available at: http://localhost:{port}\n")
+    app.run(debug=debug, host="0.0.0.0", port=port)
