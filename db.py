@@ -244,6 +244,26 @@ END $$;
 """
 
 
+_SEQUENCE_RESET_SQL = """
+-- Reset SERIAL sequences to max(id) to avoid conflicts after data migration
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM orders LIMIT 1) THEN
+        PERFORM setval(pg_get_serial_sequence('orders', 'id'),
+                        COALESCE((SELECT MAX(id) FROM orders), 1));
+    END IF;
+    IF EXISTS (SELECT 1 FROM predictions LIMIT 1) THEN
+        PERFORM setval(pg_get_serial_sequence('predictions', 'id'),
+                        COALESCE((SELECT MAX(id) FROM predictions), 1));
+    END IF;
+    IF EXISTS (SELECT 1 FROM prediction_metrics LIMIT 1) THEN
+        PERFORM setval(pg_get_serial_sequence('prediction_metrics', 'id'),
+                        COALESCE((SELECT MAX(id) FROM prediction_metrics), 1));
+    END IF;
+END $$;
+"""
+
+
 def create_tables():
     """Cria todas as tabelas se nao existirem."""
     conn = get_connection()
@@ -251,6 +271,7 @@ def create_tables():
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
             cur.execute(_MIGRATIONS_SQL)
+            cur.execute(_SEQUENCE_RESET_SQL)
         conn.commit()
         print("  [OK] Tabelas do banco de dados verificadas/criadas.")
     finally:

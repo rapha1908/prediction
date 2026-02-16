@@ -515,8 +515,34 @@ app = Dash(
     external_stylesheets=[
         "https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap"
     ],
+    suppress_callback_exceptions=True,
 )
 app.title = "TCCHE – Sales Forecast Dashboard"
+
+# Inject pulse animation CSS
+app.index_string = '''<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            @keyframes pulse {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.3; }
+            }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>'''
 
 app.layout = html.Div(
     style={
@@ -528,6 +554,8 @@ app.layout = html.Div(
         # Location component for page reload after sync
         dcc.Location(id="page-reload", refresh=True),
         dcc.Store(id="sync-trigger", data=None),
+        dcc.Store(id="sync-running", data=False),
+        dcc.Interval(id="sync-poll", interval=1500, disabled=True),
 
         # --- HEADER ---
         html.Div(
@@ -584,6 +612,55 @@ app.layout = html.Div(
                         ),
                     ]),
                 ]),
+            ],
+        ),
+
+        # --- SYNC LOG PANEL (hidden by default) ---
+        html.Div(
+            id="sync-log-panel",
+            style={"display": "none"},
+            children=[
+                html.Div(
+                    style={
+                        "margin": "0 48px", "padding": "16px 20px",
+                        "background": "#0b0b14", "borderRadius": "0 0 12px 12px",
+                        "border": f"1px solid {COLORS['card_border']}",
+                        "borderTop": "none",
+                    },
+                    children=[
+                        html.Div(style={"display": "flex", "alignItems": "center", "gap": "10px", "marginBottom": "10px"}, children=[
+                            html.Div(style={
+                                "width": "8px", "height": "8px", "borderRadius": "50%",
+                                "backgroundColor": COLORS["accent3"],
+                                "animation": "pulse 1.5s ease-in-out infinite",
+                            }),
+                            html.Span("SYNC IN PROGRESS", style={
+                                "fontSize": "11px", "fontWeight": "700",
+                                "letterSpacing": "2px", "color": COLORS["accent3"],
+                            }),
+                            html.Span(id="sync-step", style={
+                                "fontSize": "12px", "color": COLORS["text_muted"],
+                                "marginLeft": "auto",
+                            }),
+                        ]),
+                        html.Pre(
+                            id="sync-log",
+                            style={
+                                "fontFamily": "'Courier New', monospace",
+                                "fontSize": "11px",
+                                "color": COLORS["text_muted"],
+                                "backgroundColor": "transparent",
+                                "margin": "0",
+                                "padding": "0",
+                                "maxHeight": "200px",
+                                "overflowY": "auto",
+                                "whiteSpace": "pre-wrap",
+                                "wordBreak": "break-all",
+                                "lineHeight": "1.5",
+                            },
+                        ),
+                    ],
+                ),
             ],
         ),
 
@@ -2596,38 +2673,154 @@ def handle_orders_pagination(n_clicks_list, ids):
 
 
 # ============================================================
-# SYNC & RETRAIN
+# SYNC & RETRAIN (background thread + real-time log)
 # ============================================================
 
+import threading
+import tempfile
+
+_SYNC_LOG_FILE = os.path.join(tempfile.gettempdir(), "tcche_sync.log")
+_sync_lock = threading.Lock()
+_sync_state = {"running": False, "exit_code": None}
+
+
+def _run_sync_thread():
+    """Run main.py in a background thread, streaming output to a log file."""
+    main_py = str(DATA_DIR / "main.py")
+    _sync_state["running"] = True
+    _sync_state["exit_code"] = None
+
+    try:
+        with open(_SYNC_LOG_FILE, "w", encoding="utf-8") as f:
+            f.write("[Starting sync...]\n")
+            f.flush()
+
+            proc = subprocess.Popen(
+                [sys.executable, "-u", main_py],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=str(DATA_DIR),
+                bufsize=1,
+            )
+
+            for line in proc.stdout:
+                f.write(line)
+                f.flush()
+
+            proc.wait(timeout=600)
+            _sync_state["exit_code"] = proc.returncode
+
+            if proc.returncode == 0:
+                f.write("\n[Sync completed successfully!]\n")
+            else:
+                f.write(f"\n[Sync failed with exit code {proc.returncode}]\n")
+            f.flush()
+
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        _sync_state["exit_code"] = -1
+        with open(_SYNC_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write("\n[ERROR: Sync timed out after 10 minutes]\n")
+    except Exception as e:
+        _sync_state["exit_code"] = -1
+        with open(_SYNC_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"\n[ERROR: {e}]\n")
+    finally:
+        _sync_state["running"] = False
+
+
 @callback(
-    Output("sync-status", "children"),
     Output("sync-btn", "disabled"),
-    Output("sync-trigger", "data"),
+    Output("sync-status", "children"),
+    Output("sync-running", "data"),
+    Output("sync-poll", "disabled"),
+    Output("sync-log-panel", "style"),
     Input("sync-btn", "n_clicks"),
     prevent_initial_call=True,
 )
-def run_sync(n_clicks):
-    """Run main.py to sync data and retrain models, then trigger page reload."""
+def start_sync(n_clicks):
+    """Start background sync when button is clicked."""
     if not n_clicks:
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update
 
-    main_py = str(DATA_DIR / "main.py")
+    if _sync_state["running"]:
+        return True, "Sync already running...", True, False, {"display": "block"}
 
+    with open(_SYNC_LOG_FILE, "w", encoding="utf-8") as f:
+        f.write("")
+
+    thread = threading.Thread(target=_run_sync_thread, daemon=True)
+    thread.start()
+
+    return (
+        True,
+        "Syncing...",
+        True,
+        False,
+        {"display": "block"},
+    )
+
+
+@callback(
+    Output("sync-log", "children"),
+    Output("sync-step", "children"),
+    Output("sync-btn", "disabled", allow_duplicate=True),
+    Output("sync-status", "children", allow_duplicate=True),
+    Output("sync-poll", "disabled", allow_duplicate=True),
+    Output("sync-trigger", "data"),
+    Output("sync-log-panel", "style", allow_duplicate=True),
+    Input("sync-poll", "n_intervals"),
+    State("sync-running", "data"),
+    prevent_initial_call=True,
+)
+def poll_sync_progress(n_intervals, is_running):
+    """Poll sync log file and update the UI."""
+    log_text = ""
     try:
-        result = subprocess.run(
-            [sys.executable, main_py],
-            capture_output=True, text=True, timeout=600, cwd=str(DATA_DIR),
-        )
-        if result.returncode == 0:
+        with open(_SYNC_LOG_FILE, "r", encoding="utf-8") as f:
+            log_text = f.read()
+    except FileNotFoundError:
+        pass
+
+    last_lines = log_text.strip().split("\n")
+    last_line = last_lines[-1] if last_lines else ""
+
+    step = ""
+    if "[*]" in last_line:
+        step = last_line.strip().lstrip("[*]").strip()
+    elif "Pagina" in last_line or "pagina" in last_line:
+        step = "Fetching data from WooCommerce..."
+    elif "Prophet" in last_line or "Media" in last_line:
+        step = "Training models..."
+    elif "[OK]" in last_line:
+        step = last_line.strip()
+
+    if not _sync_state["running"] and _sync_state["exit_code"] is not None:
+        exit_code = _sync_state["exit_code"]
+        if exit_code == 0:
             invalidate_lazy_cache()
-            return "Sync complete! Reloading...", True, "reload"
+            return (
+                log_text, "Done!", False,
+                "Sync complete! Reloading...",
+                True, "reload",
+                {"display": "block"},
+            )
         else:
-            err = result.stderr.strip().split("\n")[-1] if result.stderr else "Unknown error"
-            return f"Error: {err}", False, no_update
-    except subprocess.TimeoutExpired:
-        return "Timeout: sync took too long (>10min)", False, no_update
-    except Exception as e:
-        return f"Error: {e}", False, no_update
+            err_lines = [l for l in last_lines if "Error" in l or "ERRO" in l or "ERROR" in l]
+            err_msg = err_lines[-1].strip() if err_lines else f"Failed (exit code {exit_code})"
+            return (
+                log_text, "Failed", False,
+                f"Error: {err_msg}",
+                True, no_update,
+                {"display": "block"},
+            )
+
+    return (
+        log_text, step, no_update,
+        no_update, no_update, no_update,
+        no_update,
+    )
 
 
 @callback(
