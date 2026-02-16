@@ -42,10 +42,16 @@ _engine = None
 
 
 def _get_engine():
-    """Retorna SQLAlchemy engine (singleton) para uso com pandas."""
+    """Retorna SQLAlchemy engine (singleton) com connection pooling."""
     global _engine
     if _engine is None:
-        _engine = create_engine(_PG_URL)
+        _engine = create_engine(
+            _PG_URL,
+            pool_size=3,
+            max_overflow=5,
+            pool_recycle=1800,
+            pool_pre_ping=True,
+        )
     return _engine
 
 

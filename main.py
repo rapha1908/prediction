@@ -1,25 +1,20 @@
 import sys
+import gc
 import pandas as pd
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import seaborn as sns
 import requests
 from datetime import datetime, timedelta
-from prophet import Prophet
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import logging
 import warnings
 
 warnings.filterwarnings("ignore")
-logging.getLogger("prophet").setLevel(logging.WARNING)
-logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
 
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
+
+_IS_RENDER = os.environ.get("RENDER") is not None
 
 # ============================================================
 # 1. CONFIGURACAO
@@ -222,6 +217,12 @@ def predict_with_prophet(prophet_data, pname, cat, pid, forecast_days, today):
     Treina Prophet e gera previsoes com intervalo de confianca.
     Treina 2 vezes: 1x no split para avaliar, 1x em tudo para prever.
     """
+    from prophet import Prophet
+    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+    logging.getLogger("prophet").setLevel(logging.WARNING)
+    logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
+
     n = len(prophet_data)
     has_yearly = n > 365
 
@@ -250,6 +251,9 @@ def predict_with_prophet(prophet_data, pname, cat, pid, forecast_days, today):
     else:
         mae = rmse = r2 = 0
 
+    del model_eval
+    gc.collect()
+
     model = Prophet(
         daily_seasonality=False,
         weekly_seasonality=True,
@@ -265,6 +269,9 @@ def predict_with_prophet(prophet_data, pname, cat, pid, forecast_days, today):
     forecast = model.predict(future)
 
     future_pred = forecast[forecast["ds"] > today].copy()
+
+    del model, forecast, future
+    gc.collect()
 
     if future_pred.empty:
         return None, None
@@ -411,9 +418,17 @@ def train_and_predict(daily_sales: pd.DataFrame, forecast_days: int = FORECAST_D
 
 def plot_predictions(daily_sales: pd.DataFrame, predictions_df: pd.DataFrame, top_n: int = 6):
     """Grafico de vendas historicas + previsoes para os top N produtos."""
+    if _IS_RENDER:
+        print("  [SKIP] Graficos desativados em producao (economia de memoria).")
+        return
+
     if predictions_df.empty:
         print("  Sem previsoes para plotar.")
         return
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
     predicted_pids = predictions_df["product_id"].unique()
     top_products = (
@@ -605,19 +620,24 @@ def main():
     plot_predictions(daily_sales, predictions_df)
     print_forecast_summary(predictions_df, metrics_df)
 
-    # --- 9. Tambem salvar CSVs (compatibilidade) ---
-    daily_sales.to_csv("vendas_historicas.csv", index=False)
-    print("\n[OK] CSV de historico salvo: vendas_historicas.csv")
+    # --- 9. Salvar CSVs (apenas local, pular em producao) ---
+    if not _IS_RENDER:
+        daily_sales.to_csv("vendas_historicas.csv", index=False)
+        print("\n[OK] CSV de historico salvo: vendas_historicas.csv")
 
-    if not predictions_df.empty:
-        predictions_df.to_csv("previsoes_vendas.csv", index=False)
-        print(f"[OK] CSV de previsoes salvo: previsoes_vendas.csv ({len(predictions_df)} registros)")
+        if not predictions_df.empty:
+            predictions_df.to_csv("previsoes_vendas.csv", index=False)
+            print(f"[OK] CSV de previsoes salvo: previsoes_vendas.csv ({len(predictions_df)} registros)")
 
-    if not metrics_df.empty:
-        metrics_df.to_csv("metricas_modelos.csv", index=False)
-        print(f"[OK] CSV de metricas salvo: metricas_modelos.csv ({len(metrics_df)} modelos)")
+        if not metrics_df.empty:
+            metrics_df.to_csv("metricas_modelos.csv", index=False)
+            print(f"[OK] CSV de metricas salvo: metricas_modelos.csv ({len(metrics_df)} modelos)")
+    else:
+        print("\n[OK] Producao: dados salvos no banco (CSVs desativados).")
 
-    print("\n>>> Para abrir a dashboard, execute: py dashboard.py")
+    # Liberar memoria
+    gc.collect()
+    print("\n[OK] Sync finalizado com sucesso.")
 
 
 if __name__ == "__main__":

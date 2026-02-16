@@ -96,95 +96,116 @@ def load_data():
 hist_df, pred_df, metrics_df = load_data()
 
 # ============================================================
-# HOURLY SALES DATA
-# ============================================================
-try:
-    import db as _db_mod
-    hourly_df = _db_mod.load_hourly_sales()
-    print(f"  [OK] Hourly sales loaded: {len(hourly_df)} rows")
-except Exception as _e:
-    print(f"  [WARNING] Could not load hourly sales: {_e}")
-    hourly_df = pd.DataFrame(columns=[
-        "hour", "product_id", "product_name", "category",
-        "ticket_end_date", "ticket_start_date",
-        "quantity_sold", "revenue", "currency",
-    ])
-
-# ============================================================
-# EXCHANGE RATES & REVENUE CONVERSION
+# EXCHANGE RATES & REVENUE CONVERSION (essential - load first)
 # ============================================================
 
-# Fetch rates once at startup and add converted revenue column
 _currencies_in_data = list(hist_df["currency"].dropna().unique()) if "currency" in hist_df.columns else []
 exchange_rates = ai_agent.fetch_exchange_rates(_currencies_in_data)
 hist_df = convert_revenue(hist_df, exchange_rates)
-if not hourly_df.empty:
-    hourly_df = convert_revenue(hourly_df, exchange_rates)
 
 print(f"  Display currency: {DISPLAY_CURRENCY}")
 if len(_currencies_in_data) > 1:
     print(f"  Currencies found: {', '.join(sorted(_currencies_in_data))}")
 
 # ============================================================
-# LOW STOCK DATA
+# LAZY-LOADED SECONDARY DATA (loaded on first access)
 # ============================================================
+
+_lazy_cache = {}
+
+
+def _get_db():
+    """Get db module (import once)."""
+    if "db" not in _lazy_cache:
+        import db as _db
+        _lazy_cache["db"] = _db
+    return _lazy_cache["db"]
+
+
+def get_hourly_df():
+    """Lazy-load hourly sales data."""
+    if "hourly_df" not in _lazy_cache:
+        try:
+            df = _get_db().load_hourly_sales()
+            if not df.empty:
+                df = convert_revenue(df, exchange_rates)
+            _lazy_cache["hourly_df"] = df
+            print(f"  [OK] Hourly sales loaded: {len(df)} rows")
+        except Exception as e:
+            print(f"  [WARNING] Could not load hourly sales: {e}")
+            _lazy_cache["hourly_df"] = pd.DataFrame(columns=[
+                "hour", "product_id", "product_name", "category",
+                "ticket_end_date", "ticket_start_date",
+                "quantity_sold", "revenue", "currency",
+            ])
+    return _lazy_cache["hourly_df"]
+
+
 LOW_STOCK_THRESHOLD = 5
+
+
+def get_low_stock_df():
+    """Lazy-load low stock data."""
+    if "low_stock_df" not in _lazy_cache:
+        try:
+            _lazy_cache["low_stock_df"] = _get_db().load_low_stock(LOW_STOCK_THRESHOLD)
+        except Exception:
+            _lazy_cache["low_stock_df"] = pd.DataFrame(
+                columns=["product_id", "product_name", "category", "stock_quantity", "status", "price"])
+    return _lazy_cache["low_stock_df"]
+
+
+def get_source_df():
+    """Lazy-load sales by source data."""
+    if "source_df" not in _lazy_cache:
+        try:
+            _lazy_cache["source_df"] = _get_db().load_sales_by_source()
+        except Exception:
+            _lazy_cache["source_df"] = pd.DataFrame(
+                columns=["source", "quantity_sold", "revenue", "order_count"])
+    return _lazy_cache["source_df"]
+
+
+def get_geo_sales_df():
+    """Lazy-load geo sales data with geocoding."""
+    if "geo_sales_df" not in _lazy_cache:
+        try:
+            _db = _get_db()
+            geo_df = _db.load_sales_by_location()
+            if not geo_df.empty:
+                _geo_cache = _db.load_geocache()
+                if _geo_cache:
+                    def _apply_geocode(row):
+                        key = f"{str(row['country']).strip()}|{str(row['state']).strip()}|{str(row['city']).strip()}"
+                        coords = _geo_cache.get(key)
+                        if coords:
+                            return pd.Series(coords, index=["lat", "lng"])
+                        return pd.Series([None, None], index=["lat", "lng"])
+                    geo_df[["lat", "lng"]] = geo_df.apply(_apply_geocode, axis=1)
+                    geo_df = geo_df.dropna(subset=["lat", "lng"])
+                else:
+                    geo_df = geo_df.iloc[0:0]
+            _lazy_cache["geo_sales_df"] = geo_df
+        except Exception:
+            _lazy_cache["geo_sales_df"] = pd.DataFrame(columns=[
+                "country", "state", "city", "product_id", "product_name",
+                "category", "quantity_sold", "revenue", "currency",
+            ])
+    return _lazy_cache["geo_sales_df"]
+
+
+def invalidate_lazy_cache():
+    """Clear all lazy-loaded data (called after sync)."""
+    _lazy_cache.clear()
+
+
+# Load small datasets eagerly (used in layout)
 try:
-    import db as _db_stock
-    low_stock_df = _db_stock.load_low_stock(LOW_STOCK_THRESHOLD)
+    low_stock_df = _get_db().load_low_stock(LOW_STOCK_THRESHOLD)
     print(f"  [OK] Low stock products: {len(low_stock_df)}")
-except Exception as _e:
-    print(f"  [WARNING] Could not load low stock data: {_e}")
-    low_stock_df = pd.DataFrame(columns=["product_id", "product_name", "category", "stock_quantity", "status", "price"])
-
-# ============================================================
-# SALES BY SOURCE
-# ============================================================
-try:
-    import db as _db_src
-    source_df = _db_src.load_sales_by_source()
-    print(f"  [OK] Sales sources loaded: {len(source_df)} channels")
-except Exception as _e:
-    print(f"  [WARNING] Could not load sales sources: {_e}")
-    source_df = pd.DataFrame(columns=["source", "quantity_sold", "revenue", "order_count"])
-
-# ============================================================
-# GEO / SALES MAP DATA
-# ============================================================
-try:
-    import db as _db_geo
-    geo_sales_df = _db_geo.load_sales_by_location()
-    print(f"  [OK] Geo sales loaded: {len(geo_sales_df)} rows")
-except Exception as _e:
-    print(f"  [WARNING] Could not load geo sales: {_e}")
-    geo_sales_df = pd.DataFrame(columns=[
-        "country", "state", "city", "product_id", "product_name",
-        "category", "quantity_sold", "revenue", "currency",
-    ])
-
-# Load geocache (fast DB read, no API calls) and join with sales data
-if not geo_sales_df.empty:
-    try:
-        _geo_cache = _db_geo.load_geocache()
-        print(f"  [OK] Geocache loaded: {len(_geo_cache)} cached locations")
-    except Exception as _ge:
-        print(f"  [WARNING] Could not load geocache: {_ge}")
-        _geo_cache = {}
-
-    if _geo_cache:
-        def _apply_geocode(row):
-            key = f"{str(row['country']).strip()}|{str(row['state']).strip()}|{str(row['city']).strip()}"
-            coords = _geo_cache.get(key)
-            if coords:
-                return pd.Series(coords, index=["lat", "lng"])
-            return pd.Series([None, None], index=["lat", "lng"])
-
-        geo_sales_df[["lat", "lng"]] = geo_sales_df.apply(_apply_geocode, axis=1)
-        geo_sales_df = geo_sales_df.dropna(subset=["lat", "lng"])
-        print(f"  [OK] Geocoded: {len(geo_sales_df)} location rows")
-    else:
-        geo_sales_df = geo_sales_df.iloc[0:0]
-        print("  [INFO] No geocache data. Run 'py main.py' to geocode locations.")
+except Exception:
+    low_stock_df = pd.DataFrame(
+        columns=["product_id", "product_name", "category", "stock_quantity", "status", "price"])
 
 
 # ============================================================
@@ -1748,12 +1769,13 @@ def update_weekday_chart(selected_cats, tab_value, selected_currencies):
 )
 def update_hourly_chart(selected_cats, tab_value, selected_currencies):
     fig = go.Figure()
-    if not selected_cats or hourly_df.empty:
+    _hourly_df = get_hourly_df()
+    if not selected_cats or _hourly_df.empty:
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
     filtered = filter_by_currency(
-        filter_by_categories(hourly_df, selected_cats, product_cat_map),
+        filter_by_categories(_hourly_df, selected_cats, product_cat_map),
         selected_currencies,
     )
     filtered = filter_by_event_tab(filtered, tab_value)
@@ -2064,11 +2086,12 @@ def handle_chat(send_clicks, n_submit, daily_clicks, weekly_clicks,
 def update_source_chart(_tab):
     """Render horizontal bar chart of sales by acquisition source."""
     fig = go.Figure()
-    if source_df.empty:
+    _source_df = get_source_df()
+    if _source_df.empty:
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
-    df = source_df.copy()
+    df = _source_df.copy()
 
     # Normalize & map labels
     _SOURCE_LABELS = {
@@ -2172,11 +2195,12 @@ def toggle_map_section(tab_value):
 )
 def update_map_cat_options(tab_value):
     """Populate category filter for the map."""
-    if tab_value != "map" or geo_sales_df.empty:
+    _geo_df = get_geo_sales_df()
+    if tab_value != "map" or _geo_df.empty:
         return []
     all_cats = sorted(set(
         cat
-        for cats_str in geo_sales_df["category"].dropna().unique()
+        for cats_str in _geo_df["category"].dropna().unique()
         for cat in parse_categories(cats_str)
     ))
     return [{"label": c, "value": c} for c in all_cats]
@@ -2190,13 +2214,14 @@ def update_map_cat_options(tab_value):
 )
 def update_map_product_options(tab_value, selected_map_cats):
     """Populate product filter, filtered by selected categories."""
-    if tab_value != "map" or geo_sales_df.empty:
+    _geo_df = get_geo_sales_df()
+    if tab_value != "map" or _geo_df.empty:
         return [], []
 
-    df = geo_sales_df
+    df = _geo_df
     if selected_map_cats:
-        geo_cat_map = build_product_cat_map(geo_sales_df)
-        df = filter_by_categories(geo_sales_df, selected_map_cats, geo_cat_map)
+        geo_cat_map = build_product_cat_map(_geo_df)
+        df = filter_by_categories(_geo_df, selected_map_cats, geo_cat_map)
 
     products = (
         df.groupby(["product_id", "product_name"])["quantity_sold"]
@@ -2234,15 +2259,16 @@ def update_sales_map(tab_value, selected_map_cats, selected_products):
         showlegend=False,
     )
 
-    if tab_value != "map" or geo_sales_df.empty:
+    _geo_df = get_geo_sales_df()
+    if tab_value != "map" or _geo_df.empty:
         fig.update_layout(**_map_base)
         return fig
 
-    df = geo_sales_df.copy()
+    df = _geo_df.copy()
 
     # Filter by selected categories (multi-category aware)
     if selected_map_cats:
-        geo_cat_map = build_product_cat_map(geo_sales_df)
+        geo_cat_map = build_product_cat_map(_geo_df)
         df = filter_by_categories(df, selected_map_cats, geo_cat_map)
 
     # Filter by selected products if any
@@ -2573,9 +2599,6 @@ def handle_orders_pagination(n_clicks_list, ids):
 # SYNC & RETRAIN
 # ============================================================
 
-_IS_RENDER = os.environ.get("RENDER") is not None
-
-
 @callback(
     Output("sync-status", "children"),
     Output("sync-btn", "disabled"),
@@ -2588,9 +2611,6 @@ def run_sync(n_clicks):
     if not n_clicks:
         return no_update, no_update, no_update
 
-    if _IS_RENDER:
-        return "Use the Render Cron Job to sync data in production.", False, no_update
-
     main_py = str(DATA_DIR / "main.py")
 
     try:
@@ -2599,6 +2619,7 @@ def run_sync(n_clicks):
             capture_output=True, text=True, timeout=600, cwd=str(DATA_DIR),
         )
         if result.returncode == 0:
+            invalidate_lazy_cache()
             return "Sync complete! Reloading...", True, "reload"
         else:
             err = result.stderr.strip().split("\n")[-1] if result.stderr else "Unknown error"
