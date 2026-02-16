@@ -1,4 +1,5 @@
 import os
+import subprocess
 import pandas as pd
 import numpy as np
 from dash import Dash, html, dcc, callback, Output, Input, State, no_update
@@ -121,6 +122,18 @@ if not hourly_df.empty:
 print(f"  Display currency: {DISPLAY_CURRENCY}")
 if len(_currencies_in_data) > 1:
     print(f"  Currencies found: {', '.join(sorted(_currencies_in_data))}")
+
+# ============================================================
+# LOW STOCK DATA
+# ============================================================
+LOW_STOCK_THRESHOLD = 5
+try:
+    import db as _db_stock
+    low_stock_df = _db_stock.load_low_stock(LOW_STOCK_THRESHOLD)
+    print(f"  [OK] Low stock products: {len(low_stock_df)}")
+except Exception as _e:
+    print(f"  [WARNING] Could not load low stock data: {_e}")
+    low_stock_df = pd.DataFrame(columns=["product_id", "product_name", "category", "stock_quantity", "status", "price"])
 
 
 # ============================================================
@@ -423,6 +436,10 @@ app.layout = html.Div(
     },
     children=[
 
+        # Location component for page reload after sync
+        dcc.Location(id="page-reload", refresh=True),
+        dcc.Store(id="sync-trigger", data=None),
+
         # --- HEADER ---
         html.Div(
             style={
@@ -430,19 +447,40 @@ app.layout = html.Div(
                 "padding": "36px 48px 32px", "borderBottom": f"1px solid {COLORS['card_border']}",
             },
             children=[
-                html.P("TCCHE", style={
-                    "color": COLORS["accent"], "fontSize": "11px", "margin": "0 0 6px",
-                    "letterSpacing": "3px", "textTransform": "uppercase", "fontWeight": "600",
-                }),
-                html.H1("Sales Forecast", style={
-                    "margin": "0 0 6px", "fontSize": "30px", "fontWeight": "700",
-                    "background": "linear-gradient(90deg, #c8a44e, #e0c87a, #b87348)",
-                    "WebkitBackgroundClip": "text", "WebkitTextFillColor": "transparent",
-                }),
-                html.P(f"Data from {date_min} to {date_max}", style={
-                    "color": COLORS["text_muted"], "margin": "0", "fontSize": "14px",
-                    "letterSpacing": "0.5px",
-                }),
+                html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "flex-start"}, children=[
+                    html.Div(children=[
+                        html.P("TCCHE", style={
+                            "color": COLORS["accent"], "fontSize": "11px", "margin": "0 0 6px",
+                            "letterSpacing": "3px", "textTransform": "uppercase", "fontWeight": "600",
+                        }),
+                        html.H1("Sales Forecast", style={
+                            "margin": "0 0 6px", "fontSize": "30px", "fontWeight": "700",
+                            "background": "linear-gradient(90deg, #c8a44e, #e0c87a, #b87348)",
+                            "WebkitBackgroundClip": "text", "WebkitTextFillColor": "transparent",
+                        }),
+                        html.P(f"Data from {date_min} to {date_max}", style={
+                            "color": COLORS["text_muted"], "margin": "0", "fontSize": "14px",
+                            "letterSpacing": "0.5px",
+                        }),
+                    ]),
+                    html.Div(style={"display": "flex", "gap": "10px", "alignItems": "center"}, children=[
+                        html.Div(id="sync-status", style={"fontSize": "13px", "color": COLORS["text_muted"]}),
+                        html.Button(
+                            "Sync & Retrain",
+                            id="sync-btn",
+                            n_clicks=0,
+                            style={
+                                "backgroundColor": COLORS["accent3"],
+                                "color": "#fff",
+                                "border": "none", "borderRadius": "8px",
+                                "padding": "10px 24px", "fontSize": "13px",
+                                "fontWeight": "700", "cursor": "pointer",
+                                "fontFamily": FONT, "letterSpacing": "0.5px",
+                                "whiteSpace": "nowrap",
+                            },
+                        ),
+                    ]),
+                ]),
             ],
         ),
 
@@ -452,6 +490,74 @@ app.layout = html.Div(
             # KPIs (dinamicos com a tab)
             html.Div(id="kpi-container",
                 style={"display": "flex", "gap": "14px", "flexWrap": "wrap", "marginBottom": "28px"},
+            ),
+
+            # ============ LOW STOCK ALERT ============
+            html.Div(
+                style={
+                    **card_style({"marginBottom": "28px", "borderLeft": "4px solid #e05555"}),
+                    "display": "block" if not low_stock_df.empty else "none",
+                },
+                children=[
+                    html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "14px"}, children=[
+                        html.Div(children=[
+                            section_label("INVENTORY ALERT"),
+                            html.H3(f"Low Stock ({len(low_stock_df)} products)", style={
+                                "margin": "0", "fontSize": "18px", "fontWeight": "700", "color": "#e05555",
+                            }),
+                        ]),
+                        html.Span(f"Threshold: < {LOW_STOCK_THRESHOLD} units", style={
+                            "fontSize": "12px", "color": COLORS["text_muted"],
+                        }),
+                    ]),
+                    html.Div(style={"overflowX": "auto", "maxHeight": "300px", "overflowY": "auto"}, children=[
+                        html.Table(
+                            style={"width": "100%", "borderCollapse": "collapse", "fontSize": "13px"},
+                            children=[
+                                html.Thead(children=[
+                                    html.Tr([
+                                        html.Th(col, style={
+                                            "textAlign": "left", "padding": "8px 12px",
+                                            "borderBottom": f"1px solid {COLORS['card_border']}",
+                                            "color": COLORS["text_muted"], "fontWeight": "600",
+                                            "fontSize": "11px", "textTransform": "uppercase",
+                                            "letterSpacing": "0.5px", "position": "sticky", "top": "0",
+                                            "backgroundColor": COLORS["card"],
+                                        }) for col in ["Product", "Category", "Stock", "Status"]
+                                    ])
+                                ]),
+                                html.Tbody(children=[
+                                    html.Tr(
+                                        style={"borderBottom": f"1px solid {COLORS['card_border']}"},
+                                        children=[
+                                            html.Td(row["product_name"], style={
+                                                "padding": "8px 12px", "color": COLORS["text"],
+                                                "maxWidth": "350px", "overflow": "hidden",
+                                                "textOverflow": "ellipsis", "whiteSpace": "nowrap",
+                                            }),
+                                            html.Td(str(row.get("category", ""))[:40], style={
+                                                "padding": "8px 12px", "color": COLORS["text_muted"],
+                                            }),
+                                            html.Td(
+                                                str(int(row["stock_quantity"])),
+                                                style={
+                                                    "padding": "8px 12px", "fontWeight": "700",
+                                                    "color": "#e05555" if row["stock_quantity"] == 0
+                                                            else "#e0a030" if row["stock_quantity"] <= 2
+                                                            else COLORS["text"],
+                                                },
+                                            ),
+                                            html.Td(str(row.get("status", "")), style={
+                                                "padding": "8px 12px", "color": COLORS["text_muted"],
+                                            }),
+                                        ],
+                                    )
+                                    for _, row in low_stock_df.iterrows()
+                                ]),
+                            ],
+                        ),
+                    ]) if not low_stock_df.empty else html.Div(),
+                ],
             ),
 
             # ============ AI SALES ASSISTANT ============
@@ -1708,6 +1814,52 @@ def handle_chat(send_clicks, n_submit, daily_clicks, weekly_clicks,
         bubbles.append(_make_message_bubble(msg["role"], display_text))
 
     return bubbles, new_history, ""
+
+
+# ============================================================
+# SYNC & RETRAIN
+# ============================================================
+
+@callback(
+    Output("sync-status", "children"),
+    Output("sync-btn", "disabled"),
+    Output("sync-trigger", "data"),
+    Input("sync-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def run_sync(n_clicks):
+    """Run main.py to sync data and retrain models, then trigger page reload."""
+    if not n_clicks:
+        return no_update, no_update, no_update
+
+    main_py = str(DATA_DIR / "main.py")
+
+    try:
+        result = subprocess.run(
+            [sys.executable, main_py],
+            capture_output=True, text=True, timeout=600, cwd=str(DATA_DIR),
+        )
+        if result.returncode == 0:
+            return "Sync complete! Reloading...", True, "reload"
+        else:
+            err = result.stderr.strip().split("\n")[-1] if result.stderr else "Unknown error"
+            return f"Error: {err}", False, no_update
+    except subprocess.TimeoutExpired:
+        return "Timeout: sync took too long (>10min)", False, no_update
+    except Exception as e:
+        return f"Error: {e}", False, no_update
+
+
+@callback(
+    Output("page-reload", "href"),
+    Input("sync-trigger", "data"),
+    prevent_initial_call=True,
+)
+def reload_after_sync(trigger):
+    """Reload the page after successful sync to pick up fresh data."""
+    if trigger == "reload":
+        return "/"
+    return no_update
 
 
 # ============================================================

@@ -466,6 +466,20 @@ def load_hourly_sales() -> pd.DataFrame:
     return df
 
 
+def load_low_stock(threshold: int = 5) -> pd.DataFrame:
+    """Retorna produtos com stock_quantity < threshold (e não nulo)."""
+    engine = _get_engine()
+    df = pd.read_sql("""
+        SELECT id AS product_id, name AS product_name, category,
+               stock_quantity, status, price
+        FROM products
+        WHERE stock_quantity IS NOT NULL
+          AND stock_quantity < %(threshold)s
+        ORDER BY stock_quantity ASC, name ASC
+    """, engine, params={"threshold": threshold})
+    return df
+
+
 # ============================================================
 # PREVISOES E METRICAS
 # ============================================================
