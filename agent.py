@@ -280,6 +280,25 @@ def build_data_summary(hist_df, pred_df, metrics_df, rates=None):
     # --- Last 7 days (product-level detail per day) ---
     last_7d = hist_df[hist_df["order_date"] >= today - pd.Timedelta(days=7)]
     if not last_7d.empty:
+        # Pre-computed weekly totals per product (authoritative)
+        weekly_totals = (
+            last_7d.groupby(["product_id", "product_name"])
+            .agg(qty=("quantity_sold", "sum"))
+            .reset_index()
+            .sort_values("qty", ascending=False)
+        )
+        lines.append("=== TOP PRODUCTS THIS WEEK (LAST 7 DAYS - AUTHORITATIVE TOTALS) ===")
+        lines.append("  IMPORTANT: These are the EXACT weekly totals. Use ONLY these numbers for weekly reports.")
+        for _, r in weekly_totals.head(20).iterrows():
+            pid = int(r['product_id'])
+            pid_data = last_7d[last_7d["product_id"] == pid]
+            rev_str = _format_converted_total(pid_data, rates)
+            lines.append(
+                f"  #{pid} {r['product_name']}: "
+                f"{int(r['qty'])} units, {rev_str}"
+            )
+        lines.append("")
+
         lines.append("=== PRODUCT-LEVEL SALES PER DAY (LAST 7 DAYS) ===")
         for date in sorted(last_7d["order_date"].unique()):
             day_data = last_7d[last_7d["order_date"] == date]
@@ -422,8 +441,11 @@ Your capabilities:
 5. Identify anomalies and opportunities
 
 Rules:
-- Always base your answers on the provided data
-- Use specific numbers and dates when available
+- NEVER invent, estimate, or calculate numbers yourself. ONLY use the EXACT numbers
+  provided in the data sections below. If a number is not explicitly in the data, say
+  you don't have that specific data.
+- Always base your answers EXCLUSIVELY on the provided data sections.
+- Use specific numbers and dates when available - copy them directly from the data.
 - Revenue data may come from MULTIPLE currencies. All totals in the data are already
   CONVERTED to the display currency using current exchange rates. When the original
   currencies differ, the breakdown is shown in parentheses. Use the converted totals
@@ -434,6 +456,9 @@ Rules:
 - Be concise but thorough
 - When showing tables, use markdown table format
 - Respond in the same language the user writes in
+- CRITICAL: For weekly product rankings, use ONLY the pre-computed totals from the
+  "TOP PRODUCTS THIS WEEK" section. NEVER try to sum daily values yourself - use the
+  exact totals provided. These are the authoritative numbers.
 - CRITICAL: You have detailed product-level sales for each of the last 7 days.
   When the user asks "what products were sold today/yesterday/on date X", look at
   the PRODUCT-LEVEL SALES PER DAY section and list the specific products, quantities,
@@ -442,6 +467,10 @@ Rules:
   the DAILY FORECAST PER PRODUCT section. When asked about predictions/forecasts for
   tomorrow or any specific day, use ONLY these exact numbers. NEVER calculate, estimate,
   or make up forecast values. If the data is there, quote it directly.
+- CRITICAL: When showing "Top N Products" for any period, the quantities MUST match
+  the pre-computed totals in the data. Cross-check your answer against the data before
+  responding. If the daily breakdown exists, the sum of daily values for a product MUST
+  equal the weekly total shown in "TOP PRODUCTS THIS WEEK".
 - NEVER hallucinate or invent numbers. If you don't have data for something, say so.
   Do not approximate or guess. Only use the exact values provided in the data context.
 
@@ -510,10 +539,12 @@ QUICK_ACTIONS = {
     "weekly_summary": (
         "Generate a weekly summary report for the last 7 days. Include:\n"
         "- Total sales and revenue with daily breakdown table\n"
-        "- Top 10 products of the week\n"
-        "- Week-over-week comparison\n"
+        "- Top 10 products of the week - use ONLY the numbers from the\n"
+        "  'TOP PRODUCTS THIS WEEK' section. Do NOT calculate or sum yourself.\n"
         "- Category performance\n"
         "- Key insights and recommendations\n"
+        "IMPORTANT: All product quantities must come directly from the\n"
+        "'TOP PRODUCTS THIS WEEK' authoritative data section.\n"
         "Format as a professional report."
     ),
     "top_products": (
