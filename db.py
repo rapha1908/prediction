@@ -338,7 +338,7 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
     if not products_df.empty and "id" in products_df.columns and "name" in products_df.columns:
         name_map = dict(zip(products_df["id"], products_df["name"]))
 
-    rows = []
+    seen = {}  # (order_id, product_id) -> row tuple, to avoid duplicates
     for order in orders_raw:
         order_id = order.get("id")
         order_date = order.get("date_created")
@@ -433,8 +433,14 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
                 items_by_pid[pid] = (qty, total, pname)
 
         for pid, (qty, total, pname) in items_by_pid.items():
-            rows.append((order_id, od, ot, pid, pname, qty, total,
-                         order_currency, order_status, b_country, b_state, b_city, o_source))
+            # Deduplicate by (order_id, product_id) – last occurrence wins
+            seen[(order_id, pid)] = (
+                order_id, od, ot, pid, pname,
+                qty, total, order_currency, order_status,
+                b_country, b_state, b_city, o_source,
+            )
+
+    rows = list(seen.values())
 
     if not rows:
         return 0
@@ -599,6 +605,39 @@ def load_sales_by_source() -> pd.DataFrame:
     except Exception:
         # Column may not exist yet (before first sync with new schema)
         return pd.DataFrame(columns=["source", "quantity_sold", "revenue", "order_count"])
+
+
+def load_all_orders() -> pd.DataFrame:
+    """Load all individual orders for the orders table display."""
+    engine = _get_engine()
+    try:
+        df = pd.read_sql("""
+            SELECT
+                o.order_id,
+                o.order_date,
+                o.product_id,
+                o.product_name,
+                o.quantity,
+                o.total,
+                o.currency,
+                o.order_status,
+                o.billing_country,
+                o.billing_city,
+                o.order_source,
+                p.category
+            FROM orders o
+            LEFT JOIN products p ON o.product_id = p.id
+            ORDER BY o.order_date DESC, o.order_id DESC
+        """, engine)
+        df["order_date"] = pd.to_datetime(df["order_date"])
+        return df
+    except Exception as e:
+        print(f"  [WARNING] Could not load orders: {e}")
+        return pd.DataFrame(columns=[
+            "order_id", "order_date", "product_id", "product_name",
+            "quantity", "total", "currency", "order_status",
+            "billing_country", "billing_city", "order_source", "category",
+        ])
 
 
 def load_low_stock(threshold: int = 5) -> pd.DataFrame:

@@ -1,7 +1,9 @@
 import os
+import json
 import subprocess
 import pandas as pd
 import numpy as np
+import dash
 from dash import Dash, html, dcc, callback, Output, Input, State, no_update
 import plotly.graph_objects as go
 import plotly.express as px
@@ -231,6 +233,23 @@ def explode_categories(df):
 
 # Category map by product
 product_cat_map = build_product_cat_map(hist_df)
+
+# ============================================================
+# ALL ORDERS DATA
+# ============================================================
+try:
+    import db as _db_orders
+    all_orders_df = _db_orders.load_all_orders()
+    print(f"  [OK] All orders loaded: {len(all_orders_df)} rows")
+except Exception as _e:
+    print(f"  [WARNING] Could not load orders: {_e}")
+    all_orders_df = pd.DataFrame(columns=[
+        "order_id", "order_date", "product_id", "product_name",
+        "quantity", "total", "currency", "order_status",
+        "billing_country", "billing_city", "order_source", "category",
+    ])
+
+orders_cat_map = build_product_cat_map(all_orders_df) if not all_orders_df.empty else {}
 
 # Product -> active or past event map (based on ticket_end_date)
 TODAY = pd.Timestamp.now().normalize()
@@ -985,6 +1004,73 @@ app.layout = html.Div(
                     "color": COLORS["text_muted"], "fontSize": "13px", "marginBottom": "18px",
                 }),
                 html.Div(id="metrics-table", style={"overflowX": "auto", "maxHeight": "500px", "overflowY": "auto"}),
+            ]),
+
+            # ============ ALL ORDERS TABLE ============
+            html.Div(style=card_style({"marginBottom": "28px"}), children=[
+                html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
+                                "marginBottom": "18px", "flexWrap": "wrap", "gap": "12px"}, children=[
+                    html.Div(children=[
+                        section_label("ORDERS"),
+                        html.H3("All Orders", style={
+                            "margin": "0 0 2px", "fontSize": "18px", "fontWeight": "700",
+                        }),
+                        html.P(id="orders-count", style={
+                            "color": COLORS["text_muted"], "fontSize": "12px", "margin": "0",
+                        }),
+                    ]),
+                    html.Div(style={"display": "flex", "gap": "12px", "alignItems": "center", "flexWrap": "wrap"}, children=[
+                        dcc.Input(
+                            id="orders-search",
+                            type="text",
+                            placeholder="Search by order #, product, city, country...",
+                            debounce=True,
+                            style={
+                                "width": "340px",
+                                "backgroundColor": COLORS["bg"],
+                                "color": COLORS["text"],
+                                "border": f"1px solid {COLORS['card_border']}",
+                                "borderRadius": "8px",
+                                "padding": "10px 16px",
+                                "fontSize": "13px",
+                                "fontFamily": FONT,
+                                "outline": "none",
+                            },
+                        ),
+                        html.Div(style={"display": "flex", "gap": "6px", "alignItems": "center"}, children=[
+                            html.Label("Show:", style={
+                                "fontSize": "12px", "color": COLORS["text_muted"],
+                            }),
+                            dcc.Dropdown(
+                                id="orders-page-size",
+                                options=[
+                                    {"label": "25", "value": 25},
+                                    {"label": "50", "value": 50},
+                                    {"label": "100", "value": 100},
+                                    {"label": "250", "value": 250},
+                                ],
+                                value=50,
+                                clearable=False,
+                                style={
+                                    "width": "80px",
+                                    "backgroundColor": COLORS["bg"],
+                                    "color": COLORS["text"],
+                                    "border": f"1px solid {COLORS['card_border']}",
+                                    "borderRadius": "8px",
+                                    "fontSize": "13px",
+                                },
+                            ),
+                        ]),
+                    ]),
+                ]),
+                html.Div(id="orders-table", style={
+                    "overflowX": "auto", "maxHeight": "600px", "overflowY": "auto",
+                }),
+                html.Div(id="orders-pagination", style={
+                    "display": "flex", "justifyContent": "center", "alignItems": "center",
+                    "gap": "8px", "marginTop": "16px",
+                }),
+                dcc.Store(id="orders-page", data=1),
             ]),
 
             # FOOTER
@@ -2232,6 +2318,241 @@ def update_sales_map(tab_value, selected_map_cats, selected_products):
     )
 
     return fig
+
+
+# ============================================================
+# ALL ORDERS TABLE
+# ============================================================
+
+@callback(
+    Output("orders-page", "data"),
+    Input("orders-search", "value"),
+    Input("category-filter", "value"),
+    Input("event-tabs", "value"),
+    Input("currency-filter", "value"),
+    Input("orders-page-size", "value"),
+)
+def reset_orders_page(*_):
+    """Reset to page 1 when any filter changes."""
+    return 1
+
+
+@callback(
+    Output("orders-table", "children"),
+    Output("orders-count", "children"),
+    Output("orders-pagination", "children"),
+    Input("category-filter", "value"),
+    Input("event-tabs", "value"),
+    Input("currency-filter", "value"),
+    Input("orders-search", "value"),
+    Input("orders-page-size", "value"),
+    Input("orders-page", "data"),
+)
+def update_orders_table(selected_cats, tab_value, selected_currencies, search_text, page_size, current_page):
+    """Render the orders table with filters and search."""
+    if all_orders_df.empty:
+        return (
+            html.P("No orders loaded.", style={"color": COLORS["text_muted"], "fontSize": "13px"}),
+            "0 orders",
+            [],
+        )
+
+    df = all_orders_df.copy()
+
+    # Filter by event tab
+    if tab_value not in ("map",):
+        pids = {pid for pid, st in event_status_map.items() if st == tab_value}
+        df = df[df["product_id"].isin(pids)]
+
+    # Filter by categories
+    if selected_cats:
+        df = filter_by_categories(df, selected_cats, orders_cat_map)
+
+    # Filter by currency
+    df = filter_by_currency(df, selected_currencies)
+
+    # Search filter
+    if search_text and search_text.strip():
+        q = search_text.strip().lower()
+        mask = (
+            df["order_id"].astype(str).str.contains(q, case=False, na=False)
+            | df["product_name"].astype(str).str.lower().str.contains(q, na=False)
+            | df["billing_country"].astype(str).str.lower().str.contains(q, na=False)
+            | df["billing_city"].astype(str).str.lower().str.contains(q, na=False)
+            | df["order_status"].astype(str).str.lower().str.contains(q, na=False)
+            | df["order_source"].astype(str).str.lower().str.contains(q, na=False)
+        )
+        df = df[mask]
+
+    total_rows = len(df)
+    page_size = page_size or 50
+    total_pages = max(1, -(-total_rows // page_size))  # ceil division
+    current_page = min(max(1, current_page or 1), total_pages)
+
+    # Paginate
+    start = (current_page - 1) * page_size
+    end = start + page_size
+    page_df = df.iloc[start:end]
+
+    # Count text
+    count_text = f"Showing {start + 1}-{min(end, total_rows)} of {total_rows:,} orders"
+
+    # Build table
+    columns = [
+        ("Order #", "order_id"),
+        ("Date", "order_date"),
+        ("Product", "product_name"),
+        ("Qty", "quantity"),
+        ("Total", "total"),
+        ("Currency", "currency"),
+        ("Status", "order_status"),
+        ("Country", "billing_country"),
+        ("City", "billing_city"),
+        ("Source", "order_source"),
+    ]
+
+    th_style = {
+        "textAlign": "left", "padding": "10px 12px",
+        "borderBottom": f"2px solid {COLORS['card_border']}",
+        "color": COLORS["text_muted"], "fontWeight": "600",
+        "fontSize": "11px", "textTransform": "uppercase",
+        "letterSpacing": "0.5px", "position": "sticky", "top": "0",
+        "backgroundColor": COLORS["card"], "whiteSpace": "nowrap",
+    }
+
+    td_style = {
+        "padding": "8px 12px", "fontSize": "13px",
+        "borderBottom": f"1px solid {COLORS['card_border']}",
+        "whiteSpace": "nowrap",
+    }
+
+    status_colors = {
+        "completed": COLORS["accent3"],
+        "processing": COLORS["accent"],
+        "on-hold": COLORS["accent4"],
+        "cancelled": COLORS["red"],
+        "refunded": COLORS["red"],
+        "failed": COLORS["red"],
+    }
+
+    rows = []
+    for _, r in page_df.iterrows():
+        st_color = status_colors.get(str(r.get("order_status", "")).lower(), COLORS["text_muted"])
+        date_str = r["order_date"].strftime("%Y-%m-%d") if pd.notna(r["order_date"]) else ""
+        total_val = f"{currency_symbol(r['currency'])}{float(r['total']):,.2f}" if pd.notna(r["total"]) else ""
+
+        rows.append(html.Tr(children=[
+            html.Td(f"#{int(r['order_id'])}", style={**td_style, "color": COLORS["accent"], "fontWeight": "600"}),
+            html.Td(date_str, style=td_style),
+            html.Td(str(r.get("product_name", "")), style={
+                **td_style, "maxWidth": "280px", "overflow": "hidden",
+                "textOverflow": "ellipsis",
+            }),
+            html.Td(str(int(r["quantity"])) if pd.notna(r["quantity"]) else "", style={**td_style, "textAlign": "center"}),
+            html.Td(total_val, style={**td_style, "fontWeight": "500"}),
+            html.Td(str(r.get("currency", "")), style={**td_style, "textAlign": "center"}),
+            html.Td(
+                str(r.get("order_status", "")),
+                style={**td_style, "color": st_color, "fontWeight": "500"},
+            ),
+            html.Td(str(r.get("billing_country", "") or ""), style=td_style),
+            html.Td(str(r.get("billing_city", "") or ""), style=td_style),
+            html.Td(str(r.get("order_source", "") or ""), style={**td_style, "color": COLORS["text_muted"]}),
+        ]))
+
+    table = html.Table(
+        style={"width": "100%", "borderCollapse": "collapse"},
+        children=[
+            html.Thead(children=[
+                html.Tr([html.Th(col_label, style=th_style) for col_label, _ in columns])
+            ]),
+            html.Tbody(children=rows),
+        ],
+    )
+
+    # Pagination buttons
+    pagination = []
+    if total_pages > 1:
+        btn_style_base = {
+            "backgroundColor": COLORS["bg"],
+            "color": COLORS["text_muted"],
+            "border": f"1px solid {COLORS['card_border']}",
+            "borderRadius": "6px", "padding": "6px 12px",
+            "fontSize": "12px", "cursor": "pointer",
+            "fontFamily": FONT,
+        }
+        btn_style_active = {
+            **btn_style_base,
+            "backgroundColor": COLORS["accent"],
+            "color": COLORS["bg"],
+            "fontWeight": "700",
+            "border": f"1px solid {COLORS['accent']}",
+        }
+
+        # Previous
+        if current_page > 1:
+            pagination.append(
+                html.Button("Prev", id={"type": "orders-page-btn", "page": current_page - 1},
+                            n_clicks=0, style=btn_style_base)
+            )
+
+        # Page numbers (show max 7 pages around current)
+        start_p = max(1, current_page - 3)
+        end_p = min(total_pages, current_page + 3)
+        if start_p > 1:
+            pagination.append(
+                html.Button("1", id={"type": "orders-page-btn", "page": 1},
+                            n_clicks=0, style=btn_style_base)
+            )
+            if start_p > 2:
+                pagination.append(html.Span("...", style={"color": COLORS["text_muted"], "padding": "0 4px"}))
+
+        for p in range(start_p, end_p + 1):
+            style = btn_style_active if p == current_page else btn_style_base
+            pagination.append(
+                html.Button(str(p), id={"type": "orders-page-btn", "page": p},
+                            n_clicks=0, style=style)
+            )
+
+        if end_p < total_pages:
+            if end_p < total_pages - 1:
+                pagination.append(html.Span("...", style={"color": COLORS["text_muted"], "padding": "0 4px"}))
+            pagination.append(
+                html.Button(str(total_pages), id={"type": "orders-page-btn", "page": total_pages},
+                            n_clicks=0, style=btn_style_base)
+            )
+
+        # Next
+        if current_page < total_pages:
+            pagination.append(
+                html.Button("Next", id={"type": "orders-page-btn", "page": current_page + 1},
+                            n_clicks=0, style=btn_style_base)
+            )
+
+    return table, count_text, pagination
+
+
+@callback(
+    Output("orders-page", "data", allow_duplicate=True),
+    Input({"type": "orders-page-btn", "page": dash.ALL}, "n_clicks"),
+    State({"type": "orders-page-btn", "page": dash.ALL}, "id"),
+    prevent_initial_call=True,
+)
+def handle_orders_pagination(n_clicks_list, ids):
+    """Navigate to the clicked page."""
+    if not n_clicks_list or not any(n_clicks_list):
+        return no_update
+    # Find which button was clicked
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return no_update
+    triggered_id = ctx.triggered[0]["prop_id"]
+    # Extract page number from the pattern-matching id
+    try:
+        id_dict = json.loads(triggered_id.split(".")[0])
+        return id_dict["page"]
+    except Exception:
+        return no_update
 
 
 # ============================================================

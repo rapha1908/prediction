@@ -48,8 +48,10 @@ FORECAST_DAYS = 30
 # 2. FUNCOES DE COLETA DE DADOS
 # ============================================================
 
-def fetch_all_pages(endpoint: str, extra_params: dict | None = None) -> list:
+def fetch_all_pages(endpoint: str, extra_params: dict | None = None,
+                     max_retries: int = 3, retry_delay: int = 5) -> list:
     """Busca todos os registros de um endpoint paginado da API WooCommerce."""
+    import time
     all_data: list = []
     page = 1
 
@@ -58,8 +60,20 @@ def fetch_all_pages(endpoint: str, extra_params: dict | None = None) -> list:
         if extra_params:
             params.update(extra_params)
 
-        response = requests.get(f"{URL_BASE}{endpoint}", params=params)
-        response.raise_for_status()
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = requests.get(f"{URL_BASE}{endpoint}", params=params, timeout=60)
+                response.raise_for_status()
+                break
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries:
+                    wait = retry_delay * attempt
+                    print(f"  [RETRY] Page {page} attempt {attempt} failed ({e}). Retrying in {wait}s...")
+                    time.sleep(wait)
+                else:
+                    print(f"  [ERROR] Page {page} failed after {max_retries} attempts.")
+                    raise
+
         data = response.json()
 
         if not data:
