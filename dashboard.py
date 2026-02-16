@@ -2559,6 +2559,9 @@ def handle_orders_pagination(n_clicks_list, ids):
 # SYNC & RETRAIN
 # ============================================================
 
+_IS_RENDER = os.environ.get("RENDER") is not None
+
+
 @callback(
     Output("sync-status", "children"),
     Output("sync-btn", "disabled"),
@@ -2570,6 +2573,9 @@ def run_sync(n_clicks):
     """Run main.py to sync data and retrain models, then trigger page reload."""
     if not n_clicks:
         return no_update, no_update, no_update
+
+    if _IS_RENDER:
+        return "Use the Render Cron Job to sync data in production.", False, no_update
 
     main_py = str(DATA_DIR / "main.py")
 
