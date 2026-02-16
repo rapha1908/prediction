@@ -1,16 +1,23 @@
 import sys
+import os
 import gc
+import logging
+import warnings
+
+# Configure matplotlib BEFORE any import that may trigger it (e.g. Prophet)
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(os.environ.get("TMPDIR", "/tmp"), "matplotlib"))
+os.environ.setdefault("MPLBACKEND", "Agg")
+import matplotlib
+matplotlib.use("Agg")
+
 import pandas as pd
 import numpy as np
 import requests
 from datetime import datetime, timedelta
-import logging
-import warnings
 
 warnings.filterwarnings("ignore")
 
 from dotenv import load_dotenv
-import os
 
 load_dotenv()
 
@@ -426,8 +433,6 @@ def plot_predictions(daily_sales: pd.DataFrame, predictions_df: pd.DataFrame, to
         print("  Sem previsoes para plotar.")
         return
 
-    import matplotlib
-    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     predicted_pids = predictions_df["product_id"].unique()

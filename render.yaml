@@ -21,6 +21,10 @@ services:
         value: "3.12.0"
       - key: RENDER
         value: "true"
+      - key: MPLCONFIGDIR
+        value: "/tmp/matplotlib"
+      - key: MPLBACKEND
+        value: "Agg"
       - key: WOOCOMMERCE_URL
         sync: false
       - key: WOOCOMMERCE_KEY
@@ -65,3 +69,7 @@ services:
         sync: false
       - key: DISPLAY_CURRENCY
         value: "USD"
+      - key: MPLCONFIGDIR
+        value: "/tmp/matplotlib"
+      - key: MPLBACKEND
+        value: "Agg"

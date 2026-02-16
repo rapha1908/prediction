@@ -2695,6 +2695,10 @@ def _run_sync_thread():
             f.write("[Starting sync...]\n")
             f.flush()
 
+            env = os.environ.copy()
+            env.setdefault("MPLCONFIGDIR", os.path.join(env.get("TMPDIR", "/tmp"), "matplotlib"))
+            env.setdefault("MPLBACKEND", "Agg")
+
             proc = subprocess.Popen(
                 [sys.executable, "-u", main_py],
                 stdout=subprocess.PIPE,
@@ -2702,6 +2706,7 @@ def _run_sync_thread():
                 text=True,
                 cwd=str(DATA_DIR),
                 bufsize=1,
+                env=env,
             )
 
             for line in proc.stdout:
