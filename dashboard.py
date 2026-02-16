@@ -547,6 +547,20 @@ app.layout = html.Div(
                                 "whiteSpace": "nowrap",
                             },
                         ),
+                        html.A(
+                            "Logout",
+                            href="/logout",
+                            style={
+                                "color": COLORS["text_muted"],
+                                "fontSize": "12px",
+                                "textDecoration": "none",
+                                "border": f"1px solid {COLORS['card_border']}",
+                                "borderRadius": "8px",
+                                "padding": "10px 18px",
+                                "whiteSpace": "nowrap",
+                                "fontFamily": FONT,
+                            },
+                        ),
                     ]),
                 ]),
             ],
@@ -2613,6 +2627,11 @@ def reload_after_sync(trigger):
 
 # Expose the Flask server for gunicorn (production)
 server = app.server
+
+# Setup authentication (JWT + cookies)
+import auth as _auth
+_auth.setup_auth(server)
+print("  [OK] Authentication enabled")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8050))
