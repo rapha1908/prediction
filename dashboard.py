@@ -136,6 +136,17 @@ except Exception as _e:
     low_stock_df = pd.DataFrame(columns=["product_id", "product_name", "category", "stock_quantity", "status", "price"])
 
 # ============================================================
+# SALES BY SOURCE
+# ============================================================
+try:
+    import db as _db_src
+    source_df = _db_src.load_sales_by_source()
+    print(f"  [OK] Sales sources loaded: {len(source_df)} channels")
+except Exception as _e:
+    print(f"  [WARNING] Could not load sales sources: {_e}")
+    source_df = pd.DataFrame(columns=["source", "quantity_sold", "revenue", "order_count"])
+
+# ============================================================
 # GEO / SALES MAP DATA
 # ============================================================
 try:
@@ -530,73 +541,97 @@ app.layout = html.Div(
                 style={"display": "flex", "gap": "14px", "flexWrap": "wrap", "marginBottom": "28px"},
             ),
 
-            # ============ LOW STOCK ALERT ============
-            html.Div(
-                style={
-                    **card_style({"marginBottom": "28px", "borderLeft": "4px solid #e05555"}),
-                    "display": "block" if not low_stock_df.empty else "none",
-                },
-                children=[
-                    html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "14px"}, children=[
-                        html.Div(children=[
-                            section_label("INVENTORY ALERT"),
-                            html.H3(f"Low Stock ({len(low_stock_df)} products)", style={
-                                "margin": "0", "fontSize": "18px", "fontWeight": "700", "color": "#e05555",
+            # ============ LOW STOCK + SALES SOURCES (50/50 grid) ============
+            html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "24px", "marginBottom": "28px"}, children=[
+
+                # --- LEFT: Inventory Alert ---
+                html.Div(
+                    style={
+                        **card_style({"borderLeft": "4px solid #e05555"}),
+                        "display": "block" if not low_stock_df.empty else "flex",
+                        "alignItems": "center", "justifyContent": "center",
+                        "minHeight": "200px",
+                    },
+                    children=[
+                        html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "14px"}, children=[
+                            html.Div(children=[
+                                section_label("INVENTORY ALERT"),
+                                html.H3(f"Low Stock ({len(low_stock_df)} products)", style={
+                                    "margin": "0", "fontSize": "18px", "fontWeight": "700", "color": "#e05555",
+                                }),
+                            ]),
+                            html.Span(f"< {LOW_STOCK_THRESHOLD} units", style={
+                                "fontSize": "12px", "color": COLORS["text_muted"],
                             }),
                         ]),
-                        html.Span(f"Threshold: < {LOW_STOCK_THRESHOLD} units", style={
-                            "fontSize": "12px", "color": COLORS["text_muted"],
-                        }),
-                    ]),
-                    html.Div(style={"overflowX": "auto", "maxHeight": "300px", "overflowY": "auto"}, children=[
-                        html.Table(
-                            style={"width": "100%", "borderCollapse": "collapse", "fontSize": "13px"},
-                            children=[
-                                html.Thead(children=[
-                                    html.Tr([
-                                        html.Th(col, style={
-                                            "textAlign": "left", "padding": "8px 12px",
-                                            "borderBottom": f"1px solid {COLORS['card_border']}",
-                                            "color": COLORS["text_muted"], "fontWeight": "600",
-                                            "fontSize": "11px", "textTransform": "uppercase",
-                                            "letterSpacing": "0.5px", "position": "sticky", "top": "0",
-                                            "backgroundColor": COLORS["card"],
-                                        }) for col in ["Product", "Category", "Stock", "Status"]
-                                    ])
-                                ]),
-                                html.Tbody(children=[
-                                    html.Tr(
-                                        style={"borderBottom": f"1px solid {COLORS['card_border']}"},
-                                        children=[
-                                            html.Td(row["product_name"], style={
-                                                "padding": "8px 12px", "color": COLORS["text"],
-                                                "maxWidth": "350px", "overflow": "hidden",
-                                                "textOverflow": "ellipsis", "whiteSpace": "nowrap",
-                                            }),
-                                            html.Td(str(row.get("category", ""))[:40], style={
-                                                "padding": "8px 12px", "color": COLORS["text_muted"],
-                                            }),
-                                            html.Td(
-                                                str(int(row["stock_quantity"])),
-                                                style={
-                                                    "padding": "8px 12px", "fontWeight": "700",
-                                                    "color": "#e05555" if row["stock_quantity"] == 0
-                                                            else "#e0a030" if row["stock_quantity"] <= 2
-                                                            else COLORS["text"],
-                                                },
-                                            ),
-                                            html.Td(str(row.get("status", "")), style={
-                                                "padding": "8px 12px", "color": COLORS["text_muted"],
-                                            }),
-                                        ],
-                                    )
-                                    for _, row in low_stock_df.iterrows()
-                                ]),
-                            ],
+                        html.Div(style={"overflowX": "auto", "maxHeight": "300px", "overflowY": "auto"}, children=[
+                            html.Table(
+                                style={"width": "100%", "borderCollapse": "collapse", "fontSize": "13px"},
+                                children=[
+                                    html.Thead(children=[
+                                        html.Tr([
+                                            html.Th(col, style={
+                                                "textAlign": "left", "padding": "8px 12px",
+                                                "borderBottom": f"1px solid {COLORS['card_border']}",
+                                                "color": COLORS["text_muted"], "fontWeight": "600",
+                                                "fontSize": "11px", "textTransform": "uppercase",
+                                                "letterSpacing": "0.5px", "position": "sticky", "top": "0",
+                                                "backgroundColor": COLORS["card"],
+                                            }) for col in ["Product", "Stock", "Status"]
+                                        ])
+                                    ]),
+                                    html.Tbody(children=[
+                                        html.Tr(
+                                            style={"borderBottom": f"1px solid {COLORS['card_border']}"},
+                                            children=[
+                                                html.Td(row["product_name"], style={
+                                                    "padding": "6px 12px", "color": COLORS["text"],
+                                                    "maxWidth": "250px", "overflow": "hidden",
+                                                    "textOverflow": "ellipsis", "whiteSpace": "nowrap",
+                                                }),
+                                                html.Td(
+                                                    str(int(row["stock_quantity"])),
+                                                    style={
+                                                        "padding": "6px 12px", "fontWeight": "700",
+                                                        "color": "#e05555" if row["stock_quantity"] == 0
+                                                                else "#e0a030" if row["stock_quantity"] <= 2
+                                                                else COLORS["text"],
+                                                    },
+                                                ),
+                                                html.Td(str(row.get("status", "")), style={
+                                                    "padding": "6px 12px", "color": COLORS["text_muted"],
+                                                }),
+                                            ],
+                                        )
+                                        for _, row in low_stock_df.iterrows()
+                                    ]),
+                                ],
+                            ),
+                        ]) if not low_stock_df.empty else html.P(
+                            "All products have sufficient stock.",
+                            style={"color": COLORS["text_muted"], "fontSize": "13px"},
                         ),
-                    ]) if not low_stock_df.empty else html.Div(),
-                ],
-            ),
+                    ],
+                ),
+
+                # --- RIGHT: Sales Sources ---
+                html.Div(
+                    style=card_style({"borderLeft": f"4px solid {COLORS['accent']}", "minHeight": "200px"}),
+                    children=[
+                        html.Div(style={"marginBottom": "14px"}, children=[
+                            section_label("ACQUISITION"),
+                            html.H3("Sales Sources", style={
+                                "margin": "0", "fontSize": "18px", "fontWeight": "700",
+                            }),
+                        ]),
+                        dcc.Graph(
+                            id="source-chart",
+                            config={"displayModeBar": False},
+                            style={"height": "280px"},
+                        ),
+                    ],
+                ),
+            ]),
 
             # ============ AI SALES ASSISTANT ============
             html.Div(style=card_style({"marginBottom": "28px", "borderTop": f"3px solid {COLORS['accent']}"}), children=[
@@ -1916,6 +1951,104 @@ def handle_chat(send_clicks, n_submit, daily_clicks, weekly_clicks,
         bubbles.append(_make_message_bubble(msg["role"], display_text))
 
     return bubbles, new_history, ""
+
+
+# ============================================================
+# SALES SOURCES CHART
+# ============================================================
+
+@callback(
+    Output("source-chart", "figure"),
+    Input("event-tabs", "value"),
+)
+def update_source_chart(_tab):
+    """Render horizontal bar chart of sales by acquisition source."""
+    fig = go.Figure()
+    if source_df.empty:
+        fig.update_layout(**PLOT_LAYOUT)
+        return fig
+
+    df = source_df.copy()
+
+    # Normalize & map labels
+    _SOURCE_LABELS = {
+        "typein": "Direct", "direct": "Direct",
+        "organic": "Organic Search", "referral": "Referral",
+        "utm": "Paid / UTM", "admin": "Admin / Manual",
+        "facebook": "Facebook", "fb": "Facebook",
+        "instagram": "Instagram", "ig": "Instagram",
+        "google": "Google Ads", "adwords": "Google Ads",
+        "ppc,adwords": "Google Ads",
+        "hs_email": "HubSpot Email", "hs_automation": "HubSpot Auto",
+        "telegram": "Telegram", "twitter": "Twitter / X",
+        "linkedin": "LinkedIn", "youtube": "YouTube",
+        "tiktok": "TikTok", "affiliation": "Affiliate",
+        "speaker_website": "Speaker Website",
+    }
+    df["label"] = df["source"].apply(
+        lambda s: _SOURCE_LABELS.get(str(s).lower().strip(), str(s).strip().title())
+    )
+
+    # Merge rows with same label (e.g. "fb" + "facebook" → "Facebook")
+    df = df.groupby("label").agg(
+        quantity_sold=("quantity_sold", "sum"),
+        revenue=("revenue", "sum"),
+        order_count=("order_count", "sum"),
+    ).reset_index().sort_values("quantity_sold", ascending=False)
+
+    # Keep top 10, group the rest into "Other"
+    if len(df) > 10:
+        top = df.head(10)
+        rest = df.iloc[10:]
+        other = pd.DataFrame([{
+            "label": "Other",
+            "quantity_sold": rest["quantity_sold"].sum(),
+            "revenue": rest["revenue"].sum(),
+            "order_count": rest["order_count"].sum(),
+        }])
+        df = pd.concat([top, other], ignore_index=True)
+
+    # Calculate percentages
+    total = df["quantity_sold"].sum()
+    df["pct"] = (df["quantity_sold"] / total * 100).round(1)
+
+    # Sort ascending for horizontal bar (top source at top)
+    df = df.sort_values("quantity_sold", ascending=True)
+
+    # Color palette
+    _SRC_COLORS = {
+        "Direct": COLORS["accent"], "Facebook": "#4267B2", "Instagram": "#E1306C",
+        "Google Ads": "#34A853", "Organic Search": COLORS["accent3"],
+        "HubSpot Email": "#FF7A59", "HubSpot Auto": "#FF5C35",
+        "Referral": "#6ea8d9", "Telegram": "#0088cc",
+        "Speaker Website": COLORS["accent4"], "Affiliate": "#a67ed6",
+    }
+    colors = [_SRC_COLORS.get(lbl, COLORS["text_muted"]) for lbl in df["label"]]
+
+    fig.add_trace(go.Bar(
+        y=df["label"],
+        x=df["quantity_sold"],
+        orientation="h",
+        marker_color=colors,
+        marker_line_width=0,
+        text=df.apply(lambda r: f"{int(r['quantity_sold']):,}  ({r['pct']}%)", axis=1),
+        textposition="auto",
+        textfont=dict(size=11, color="#fff"),
+        hovertemplate="<b>%{y}</b><br>Units: %{x:,}<br>Orders: %{customdata[0]:,}<br>Revenue: $%{customdata[1]:,.0f}<extra></extra>",
+        customdata=df[["order_count", "revenue"]].values,
+    ))
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=FONT, color=COLORS["text"], size=12),
+        showlegend=False,
+        margin=dict(l=120, r=20, t=10, b=10),
+        xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
+        yaxis=dict(showgrid=False, showline=False),
+        bargap=0.25,
+    )
+    return fig
 
 
 # ============================================================

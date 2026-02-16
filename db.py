@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS orders (
     billing_country TEXT,
     billing_state   TEXT,
     billing_city    TEXT,
+    order_source    TEXT,
     synced_at       TIMESTAMP DEFAULT NOW(),
     UNIQUE (order_id, product_id)
 );
@@ -184,6 +185,17 @@ BEGIN
         ALTER TABLE orders ADD COLUMN billing_country TEXT;
         ALTER TABLE orders ADD COLUMN billing_state TEXT;
         ALTER TABLE orders ADD COLUMN billing_city TEXT;
+    END IF;
+END $$;
+
+-- Add order_source column to orders (if missing)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orders' AND column_name = 'order_source'
+    ) THEN
+        ALTER TABLE orders ADD COLUMN order_source TEXT;
     END IF;
 END $$;
 
@@ -336,6 +348,50 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
         b_country = billing.get("country", "") or ""
         b_state = billing.get("state", "") or ""
         b_city = billing.get("city", "") or ""
+
+        # Extract order attribution source from meta_data
+        # Priority: pys_enrich_data.pys_utm (utm_source) > pys_enrich_data.pys_source > WC attribution
+        meta = order.get("meta_data", [])
+        o_source = None
+        if isinstance(meta, list):
+            # 1) PixelYourSite enriched data (most accurate)
+            for m in meta:
+                if m.get("key") == "pys_enrich_data":
+                    pys = m.get("value", {})
+                    if isinstance(pys, dict):
+                        # Parse utm_source from pys_utm string like "utm_source:facebook|utm_medium:paid|..."
+                        pys_utm = pys.get("pys_utm", "")
+                        if isinstance(pys_utm, str) and "utm_source:" in pys_utm:
+                            for part in pys_utm.split("|"):
+                                if part.startswith("utm_source:"):
+                                    val = part.split(":", 1)[1].strip()
+                                    if val and val != "undefined":
+                                        o_source = val
+                                    break
+                        # Fallback to pys_source
+                        if not o_source:
+                            ps = pys.get("pys_source", "")
+                            if isinstance(ps, str) and ps and ps != "undefined":
+                                o_source = ps
+                    break
+
+            # 2) WooCommerce native attribution (fallback)
+            if not o_source:
+                for m in meta:
+                    k = m.get("key", "")
+                    v = str(m.get("value", "")).strip()
+                    if k == "_wc_order_attribution_utm_source" and v and v not in ("(direct)", ""):
+                        o_source = v
+                        break
+            if not o_source:
+                for m in meta:
+                    if m.get("key") == "_wc_order_attribution_source_type":
+                        v = str(m.get("value", "")).strip()
+                        if v:
+                            o_source = v
+                        break
+        o_source = (o_source or "direct").strip()
+
         if not order_id or not order_date:
             continue
 
@@ -378,7 +434,7 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
 
         for pid, (qty, total, pname) in items_by_pid.items():
             rows.append((order_id, od, ot, pid, pname, qty, total,
-                         order_currency, order_status, b_country, b_state, b_city))
+                         order_currency, order_status, b_country, b_state, b_city, o_source))
 
     if not rows:
         return 0
@@ -390,14 +446,15 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
             sql = """
                 INSERT INTO orders (order_id, order_date, order_time, product_id,
                                     product_name, quantity, total, currency, order_status,
-                                    billing_country, billing_state, billing_city)
+                                    billing_country, billing_state, billing_city, order_source)
                 VALUES %s
                 ON CONFLICT (order_id, product_id) DO UPDATE SET
                     currency = EXCLUDED.currency,
                     order_time = EXCLUDED.order_time,
                     billing_country = EXCLUDED.billing_country,
                     billing_state = EXCLUDED.billing_state,
-                    billing_city = EXCLUDED.billing_city
+                    billing_city = EXCLUDED.billing_city,
+                    order_source = EXCLUDED.order_source
             """
             execute_values(cur, sql, rows, page_size=500)
             inserted = cur.rowcount
@@ -522,6 +579,26 @@ def load_sales_by_location() -> pd.DataFrame:
         ORDER BY quantity_sold DESC
     """, engine)
     return df
+
+
+def load_sales_by_source() -> pd.DataFrame:
+    """Carrega vendas agregadas por source (canal de aquisicao)."""
+    engine = _get_engine()
+    try:
+        df = pd.read_sql("""
+            SELECT
+                COALESCE(NULLIF(order_source, ''), 'Direct') AS source,
+                SUM(quantity)       AS quantity_sold,
+                SUM(total::float)   AS revenue,
+                COUNT(DISTINCT order_id) AS order_count
+            FROM orders
+            GROUP BY 1
+            ORDER BY quantity_sold DESC
+        """, engine)
+        return df
+    except Exception:
+        # Column may not exist yet (before first sync with new schema)
+        return pd.DataFrame(columns=["source", "quantity_sold", "revenue", "order_count"])
 
 
 def load_low_stock(threshold: int = 5) -> pd.DataFrame:
