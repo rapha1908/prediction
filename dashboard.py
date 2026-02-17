@@ -532,6 +532,16 @@ app.index_string = '''<!DOCTYPE html>
                 0%, 100% { opacity: 1; }
                 50% { opacity: 0.3; }
             }
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            .dash-loading .dash-spinner::before {
+                border-top-color: #c8a44e !important;
+            }
+            ._dash-loading-callback {
+                visibility: visible !important;
+            }
         </style>
     </head>
     <body>
@@ -557,6 +567,7 @@ app.layout = html.Div(
         dcc.Store(id="sync-running", data=False),
         dcc.Interval(id="sync-poll", interval=1500, disabled=True),
         dcc.Download(id="report-download"),
+        dcc.Store(id="report-trigger", data=None),
 
         # --- HEADER ---
         html.Div(
@@ -1099,7 +1110,6 @@ app.layout = html.Div(
                                     ]),
                                     html.Div(style={"display": "flex", "gap": "10px", "alignItems": "center"}, children=[
                                         html.Button(
-                                            "Download PDF",
                                             id="report-download-btn",
                                             n_clicks=0,
                                             style={
@@ -1109,7 +1119,22 @@ app.layout = html.Div(
                                                 "padding": "8px 20px", "fontSize": "12px",
                                                 "fontWeight": "700", "cursor": "pointer",
                                                 "fontFamily": FONT,
+                                                "minWidth": "145px",
+                                                "display": "flex", "alignItems": "center",
+                                                "justifyContent": "center", "gap": "8px",
                                             },
+                                            children=[
+                                                html.Span(id="pdf-spinner", style={"display": "none"},
+                                                          children=html.Span(style={
+                                                              "width": "14px", "height": "14px",
+                                                              "border": "2px solid rgba(11,11,20,0.3)",
+                                                              "borderTop": "2px solid #0b0b14",
+                                                              "borderRadius": "50%",
+                                                              "display": "inline-block",
+                                                              "animation": "spin 0.8s linear infinite",
+                                                          })),
+                                                html.Span("Download PDF", id="pdf-btn-text"),
+                                            ],
                                         ),
                                         html.Button(
                                             "Close",
@@ -1130,11 +1155,15 @@ app.layout = html.Div(
                             ),
                             # Modal body (scrollable)
                             html.Div(
-                                id="report-content",
-                                style={
-                                    "flex": "1", "overflowY": "auto",
-                                    "padding": "28px",
-                                },
+                                style={"flex": "1", "overflowY": "auto", "padding": "28px"},
+                                children=[
+                                    dcc.Loading(
+                                        id="report-loading",
+                                        type="dot",
+                                        color=COLORS["accent"],
+                                        children=html.Div(id="report-content"),
+                                    ),
+                                ],
                             ),
                         ],
                     ),
@@ -3461,47 +3490,51 @@ def _generate_pdf_report(charts, stats_text, ai_text, selected_cats,
     return bytes(pdf.output())
 
 
-@callback(
+# Step 1a: Open modal instantly on Generate Report click
+app.clientside_callback(
+    "function(n) { return [{display: 'block'}, Date.now()]; }",
     Output("report-modal", "style"),
-    Output("report-content", "children"),
+    Output("report-trigger", "data"),
     Input("report-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+
+# Step 1b: Close modal on Close / overlay click
+app.clientside_callback(
+    "function(a, b) { return {display: 'none'}; }",
+    Output("report-modal", "style", allow_duplicate=True),
     Input("report-close-btn", "n_clicks"),
     Input("report-overlay", "n_clicks"),
+    prevent_initial_call=True,
+)
+
+
+# Step 2: Populate report content (server-side, triggered by Store change)
+@callback(
+    Output("report-content", "children"),
+    Input("report-trigger", "data"),
     State("category-filter", "value"),
     State("event-tabs", "value"),
     State("currency-filter", "value"),
     State("product-selector", "value"),
     prevent_initial_call=True,
 )
-def toggle_report_modal(open_clicks, close_clicks, overlay_clicks,
-                        selected_cats, tab_value, selected_currencies, product_id):
-    """Open/close report modal and generate report content with AI analysis."""
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return no_update, no_update
-
-    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
-
-    if trigger_id in ("report-close-btn", "report-overlay"):
-        return {"display": "none"}, no_update
-
+def generate_report_content(trigger, selected_cats, tab_value,
+                            selected_currencies, product_id):
+    """Generate report content (runs after modal is already visible)."""
     if not selected_cats:
-        return (
-            {"display": "block"},
-            html.Div(style={"textAlign": "center", "padding": "60px"}, children=[
-                html.P("No categories selected.", style={
-                    "color": COLORS["text_muted"], "fontSize": "18px",
-                }),
-                html.P("Select categories in the filter above, then click Generate Report.",
-                       style={"color": COLORS["text_muted"], "fontSize": "14px"}),
-            ]),
-        )
+        return html.Div(style={"textAlign": "center", "padding": "60px"}, children=[
+            html.P("No categories selected.", style={
+                "color": COLORS["text_muted"], "fontSize": "18px",
+            }),
+            html.P("Select categories in the filter above, then click Generate Report.",
+                   style={"color": COLORS["text_muted"], "fontSize": "14px"}),
+        ])
 
     charts, stats_text, fh, fp, fm = _build_report_charts(
         selected_cats, tab_value, selected_currencies, product_id
     )
 
-    # Get AI analysis
     ai_text = _get_ai_report_analysis(
         selected_cats, tab_value, selected_currencies, product_id, fh, fp, fm
     )
@@ -3552,11 +3585,32 @@ def toggle_report_modal(open_clicks, close_clicks, overlay_clicks,
             ])
         )
 
-    return {"display": "block"}, report_children
+    return report_children
+
+
+# Instant spinner on Download PDF click
+app.clientside_callback(
+    """
+    function(n) {
+        if (!n) return [window.dash_clientside.no_update,
+                        window.dash_clientside.no_update,
+                        window.dash_clientside.no_update];
+        return [{display: 'inline-block'}, 'Preparing...', true];
+    }
+    """,
+    Output("pdf-spinner", "style"),
+    Output("pdf-btn-text", "children"),
+    Output("report-download-btn", "disabled"),
+    Input("report-download-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
 
 
 @callback(
     Output("report-download", "data"),
+    Output("pdf-spinner", "style", allow_duplicate=True),
+    Output("pdf-btn-text", "children", allow_duplicate=True),
+    Output("report-download-btn", "disabled", allow_duplicate=True),
     Input("report-download-btn", "n_clicks"),
     State("category-filter", "value"),
     State("event-tabs", "value"),
@@ -3569,7 +3623,7 @@ def download_report_pdf(n_clicks, selected_cats, tab_value, selected_currencies,
     from datetime import datetime
 
     if not n_clicks or not selected_cats:
-        return no_update
+        return no_update, no_update, no_update, no_update
 
     charts, stats_text, fh, fp, fm = _build_report_charts(
         selected_cats, tab_value, selected_currencies, product_id
@@ -3586,7 +3640,12 @@ def download_report_pdf(n_clicks, selected_cats, tab_value, selected_currencies,
 
     filename = f"tcche_report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
 
-    return dcc.send_bytes(pdf_bytes, filename, mime_type="application/pdf")
+    return (
+        dcc.send_bytes(pdf_bytes, filename, mime_type="application/pdf"),
+        {"display": "none"},
+        "Download PDF",
+        False,
+    )
 
 
 # ============================================================
