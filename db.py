@@ -269,6 +269,18 @@ CREATE TABLE IF NOT EXISTS low_stock_archived (
     product_id      INTEGER PRIMARY KEY REFERENCES products(id),
     archived_at     TIMESTAMP DEFAULT NOW()
 );
+
+-- Gerenciamento automatico de estoque (escassez artificial)
+CREATE TABLE IF NOT EXISTS stock_manager (
+    product_id          INTEGER PRIMARY KEY,
+    product_name        TEXT,
+    total_stock         INTEGER NOT NULL DEFAULT 0,
+    replenish_amount    INTEGER NOT NULL DEFAULT 20,
+    low_threshold       INTEGER NOT NULL DEFAULT 5,
+    enabled             BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at          TIMESTAMP DEFAULT NOW(),
+    updated_at          TIMESTAMP DEFAULT NOW()
+);
 """
 
 
@@ -767,6 +779,346 @@ def unarchive_low_stock(product_id: int):
         raise
     finally:
         conn.close()
+
+
+# ============================================================
+# STOCK MANAGER (automatic scarcity replenishment)
+# ============================================================
+
+def _ensure_stock_manager_table():
+    """Create the stock_manager table if it doesn't exist."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS stock_manager (
+                    product_id       INTEGER PRIMARY KEY,
+                    product_name     TEXT,
+                    total_stock      INTEGER NOT NULL DEFAULT 0,
+                    replenish_amount INTEGER NOT NULL DEFAULT 20,
+                    low_threshold    INTEGER NOT NULL DEFAULT 5,
+                    enabled          BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at       TIMESTAMP DEFAULT NOW(),
+                    updated_at       TIMESTAMP DEFAULT NOW()
+                )
+            """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_stock_manager() -> pd.DataFrame:
+    """Load all products managed by the stock manager."""
+    _ensure_stock_manager_table()
+    engine = _get_engine()
+    df = pd.read_sql("""
+        SELECT sm.product_id, sm.product_name, sm.total_stock,
+               sm.replenish_amount, sm.low_threshold, sm.enabled,
+               sm.created_at, sm.updated_at,
+               p.stock_quantity AS current_wc_stock,
+               p.total_sales
+        FROM stock_manager sm
+        LEFT JOIN products p ON sm.product_id = p.id
+        ORDER BY sm.enabled DESC, sm.product_name ASC
+    """, engine)
+    return df
+
+
+def add_stock_manager(product_id: int, product_name: str, total_stock: int,
+                      replenish_amount: int = 20, low_threshold: int = 5):
+    """Add a product to the stock manager."""
+    _ensure_stock_manager_table()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO stock_manager (product_id, product_name, total_stock,
+                                           replenish_amount, low_threshold)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (product_id) DO UPDATE SET
+                    product_name = EXCLUDED.product_name,
+                    total_stock = EXCLUDED.total_stock,
+                    replenish_amount = EXCLUDED.replenish_amount,
+                    low_threshold = EXCLUDED.low_threshold,
+                    updated_at = NOW()
+            """, (product_id, product_name, total_stock, replenish_amount, low_threshold))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def update_stock_manager(product_id: int, **kwargs):
+    """Update specific fields of a stock manager entry."""
+    _ensure_stock_manager_table()
+    allowed = {"total_stock", "replenish_amount", "low_threshold", "enabled"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed}
+    if not updates:
+        return
+    set_clause = ", ".join(f"{k} = %s" for k in updates)
+    values = list(updates.values()) + [product_id]
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE stock_manager SET {set_clause}, updated_at = NOW() WHERE product_id = %s",
+                values,
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def remove_stock_manager(product_id: int):
+    """Remove a product from the stock manager."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM stock_manager WHERE product_id = %s", (product_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_products_for_stock_picker() -> pd.DataFrame:
+    """Load products available to add to stock manager (not already managed)."""
+    _ensure_stock_manager_table()
+    engine = _get_engine()
+    df = pd.read_sql("""
+        SELECT p.id AS product_id, p.name AS product_name,
+               COALESCE(p.stock_quantity, 0) AS stock_quantity,
+               COALESCE(p.total_sales, 0) AS total_sales,
+               p.category, p.status
+        FROM products p
+        LEFT JOIN stock_manager sm ON p.id = sm.product_id
+        WHERE sm.product_id IS NULL
+        ORDER BY p.name ASC
+    """, engine)
+    return df
+
+
+def wc_get_stock(product_id: int) -> dict | None:
+    """Fetch live stock info from WooCommerce for a single product.
+    Returns dict with stock_quantity and total_sales, or None on failure."""
+    import requests as _req
+    wc_url = os.getenv("WOOCOMMERCE_URL", "https://tcche.org/wp-json/wc/v3/")
+    wc_key = os.getenv("WOOCOMMERCE_KEY", "")
+    wc_secret = os.getenv("WOOCOMMERCE_SECRET", "")
+    if not wc_key or not wc_secret:
+        return None
+    try:
+        resp = _req.get(
+            f"{wc_url}products/{product_id}",
+            params={"consumer_key": wc_key, "consumer_secret": wc_secret},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            stock = data.get("stock_quantity") or 0
+            sold = data.get("total_sales") or 0
+            # Sync local DB
+            conn = get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE products SET stock_quantity = %s, total_sales = %s, updated_at = NOW() WHERE id = %s",
+                        (stock, sold, product_id),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+            return {"stock_quantity": int(stock), "total_sales": int(sold)}
+    except Exception as e:
+        print(f"  [WC] Could not fetch stock for {product_id}: {e}")
+    return None
+
+
+def wc_get_stock_bulk(product_ids: list[int]) -> dict[int, dict]:
+    """Fetch live stock for multiple products. Returns {pid: {stock_quantity, total_sales}}."""
+    import requests as _req
+    wc_url = os.getenv("WOOCOMMERCE_URL", "https://tcche.org/wp-json/wc/v3/")
+    wc_key = os.getenv("WOOCOMMERCE_KEY", "")
+    wc_secret = os.getenv("WOOCOMMERCE_SECRET", "")
+    if not wc_key or not wc_secret or not product_ids:
+        return {}
+    result = {}
+    # WC API supports fetching multiple products with include parameter (max 100 per page)
+    try:
+        ids_str = ",".join(str(p) for p in product_ids)
+        resp = _req.get(
+            f"{wc_url}products",
+            params={
+                "consumer_key": wc_key, "consumer_secret": wc_secret,
+                "include": ids_str, "per_page": 100,
+            },
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            updates = []
+            for p in resp.json():
+                pid = p["id"]
+                stock = p.get("stock_quantity") or 0
+                sold = p.get("total_sales") or 0
+                result[pid] = {"stock_quantity": int(stock), "total_sales": int(sold)}
+                updates.append((int(stock), int(sold), pid))
+            # Bulk sync local DB
+            if updates:
+                conn = get_connection()
+                try:
+                    with conn.cursor() as cur:
+                        for stock_val, sold_val, pid_val in updates:
+                            cur.execute(
+                                "UPDATE products SET stock_quantity = %s, total_sales = %s, updated_at = NOW() WHERE id = %s",
+                                (stock_val, sold_val, pid_val),
+                            )
+                    conn.commit()
+                finally:
+                    conn.close()
+            print(f"  [WC] Synced live stock for {len(result)} products.")
+    except Exception as e:
+        print(f"  [WC] Bulk stock fetch failed: {e}")
+    return result
+
+
+def wc_update_stock(product_id: int, new_quantity: int) -> bool:
+    """Update stock quantity on WooCommerce via REST API.
+    Handles Tribe Tickets products by also updating _tribe_ticket_capacity.
+    Returns True on success, False on failure."""
+    import requests as _req
+    wc_url = os.getenv("WOOCOMMERCE_URL", "https://tcche.org/wp-json/wc/v3/")
+    wc_key = os.getenv("WOOCOMMERCE_KEY", "")
+    wc_secret = os.getenv("WOOCOMMERCE_SECRET", "")
+    if not wc_key or not wc_secret:
+        print(f"  [ERROR] WooCommerce credentials not configured.")
+        return False
+    auth = (wc_key, wc_secret)
+    try:
+        url = f"{wc_url}products/{product_id}"
+
+        # First GET to check if it's a Tribe Ticket product
+        get_resp = _req.get(url, auth=auth, timeout=10)
+        if get_resp.status_code != 200:
+            print(f"  [ERROR] WC GET failed for {product_id}: HTTP {get_resp.status_code}")
+            return False
+
+        product_data = get_resp.json()
+        meta = {m["key"]: m["value"] for m in product_data.get("meta_data", [])}
+        total_sold = int(product_data.get("total_sales", 0) or 0)
+        is_tribe = "_tribe_ticket_capacity" in meta
+
+        # Build update payload
+        payload = {
+            "manage_stock": True,
+            "stock_quantity": new_quantity,
+        }
+        if is_tribe:
+            # Tribe Tickets: capacity must be >= stock + sold
+            new_capacity = new_quantity + total_sold
+            payload["meta_data"] = [
+                {"key": "_tribe_ticket_capacity", "value": str(new_capacity)},
+            ]
+            print(f"  [WC] Tribe product {product_id}: setting stock={new_quantity}, capacity={new_capacity}")
+
+        resp = _req.put(url, json=payload, auth=auth, timeout=15)
+        if resp.status_code == 200:
+            result_stock = resp.json().get("stock_quantity")
+            if result_stock != new_quantity:
+                print(f"  [WARNING] WC returned stock={result_stock}, expected {new_quantity}")
+            # Update local DB
+            conn = get_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE products SET stock_quantity = %s, updated_at = NOW() WHERE id = %s",
+                        (new_quantity, product_id),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+            return result_stock == new_quantity
+        else:
+            print(f"  [ERROR] WC stock update failed for {product_id}: HTTP {resp.status_code}")
+            return False
+    except Exception as e:
+        print(f"  [ERROR] WC stock update failed for {product_id}: {e}")
+        return False
+
+
+def auto_replenish_stock() -> list[dict]:
+    """Check all enabled stock_manager products and replenish if needed.
+    Fetches LIVE stock from WooCommerce before deciding.
+    Returns list of actions taken."""
+    _ensure_stock_manager_table()
+    engine = _get_engine()
+    df = pd.read_sql("""
+        SELECT sm.product_id, sm.product_name, sm.total_stock,
+               sm.replenish_amount, sm.low_threshold
+        FROM stock_manager sm
+        WHERE sm.enabled = TRUE
+    """, engine)
+
+    if df.empty:
+        return []
+
+    # Fetch live stock from WooCommerce for all managed products
+    pids = df["product_id"].astype(int).tolist()
+    live_stock = wc_get_stock_bulk(pids)
+    print(f"  [REPLENISH] Fetched live stock for {len(live_stock)}/{len(pids)} products.")
+
+    actions = []
+    for _, row in df.iterrows():
+        pid = int(row["product_id"])
+        total = int(row["total_stock"])
+        replenish = int(row["replenish_amount"])
+        threshold = int(row["low_threshold"])
+
+        # Use live WC data if available, otherwise fall back to local DB
+        if pid in live_stock:
+            current = live_stock[pid]["stock_quantity"]
+            sold = live_stock[pid]["total_sales"]
+        else:
+            # Fallback: read from local DB
+            local = pd.read_sql(
+                "SELECT COALESCE(stock_quantity, 0) AS sq, COALESCE(total_sales, 0) AS ts FROM products WHERE id = %(pid)s",
+                engine, params={"pid": pid},
+            )
+            current = int(local["sq"].iloc[0]) if not local.empty else 0
+            sold = int(local["ts"].iloc[0]) if not local.empty else 0
+
+        remaining = max(0, total - sold)
+
+        if current <= threshold and remaining > 0:
+            add_qty = min(replenish, remaining - current)
+            if add_qty > 0:
+                new_stock = current + add_qty
+                success = wc_update_stock(pid, new_stock)
+                actions.append({
+                    "product_id": pid,
+                    "product_name": row["product_name"],
+                    "old_stock": current,
+                    "new_stock": new_stock,
+                    "added": add_qty,
+                    "remaining": remaining - new_stock + current,
+                    "success": success,
+                })
+                print(f"  [REPLENISH] {row['product_name']}: {current} -> {new_stock} (+{add_qty})"
+                      f" | sold={sold}, remaining={remaining} | {'OK' if success else 'FAILED'}")
+            else:
+                print(f"  [REPLENISH] {row['product_name']}: stock={current}, threshold={threshold}"
+                      f" -> no room to add (remaining={remaining})")
+        else:
+            reason = "stock OK" if current > threshold else "sold out"
+            print(f"  [REPLENISH] {row['product_name']}: stock={current}, threshold={threshold} -> {reason}")
+
+    return actions
 
 
 # ============================================================
