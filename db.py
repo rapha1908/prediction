@@ -263,6 +263,12 @@ BEGIN
                         COALESCE((SELECT MAX(id) FROM prediction_metrics), 1));
     END IF;
 END $$;
+
+-- Produtos arquivados no alerta de estoque baixo
+CREATE TABLE IF NOT EXISTS low_stock_archived (
+    product_id      INTEGER PRIMARY KEY REFERENCES products(id),
+    archived_at     TIMESTAMP DEFAULT NOW()
+);
 """
 
 
@@ -682,17 +688,85 @@ def load_all_orders() -> pd.DataFrame:
 
 
 def load_low_stock(threshold: int = 5) -> pd.DataFrame:
-    """Retorna produtos com stock_quantity < threshold (e não nulo)."""
+    """Retorna produtos com stock_quantity < threshold, excluindo arquivados."""
+    _ensure_archived_table()
     engine = _get_engine()
     df = pd.read_sql("""
-        SELECT id AS product_id, name AS product_name, category,
-               stock_quantity, status, price
-        FROM products
-        WHERE stock_quantity IS NOT NULL
-          AND stock_quantity < %(threshold)s
-        ORDER BY stock_quantity ASC, name ASC
+        SELECT p.id AS product_id, p.name AS product_name, p.category,
+               p.stock_quantity, p.status, p.price
+        FROM products p
+        LEFT JOIN low_stock_archived a ON p.id = a.product_id
+        WHERE p.stock_quantity IS NOT NULL
+          AND p.stock_quantity < %(threshold)s
+          AND a.product_id IS NULL
+        ORDER BY p.stock_quantity ASC, p.name ASC
     """, engine, params={"threshold": threshold})
     return df
+
+
+def load_low_stock_archived(threshold: int = 5) -> pd.DataFrame:
+    """Retorna produtos arquivados que ainda tem estoque baixo."""
+    _ensure_archived_table()
+    engine = _get_engine()
+    df = pd.read_sql("""
+        SELECT p.id AS product_id, p.name AS product_name, p.category,
+               p.stock_quantity, p.status, p.price, a.archived_at
+        FROM products p
+        INNER JOIN low_stock_archived a ON p.id = a.product_id
+        WHERE p.stock_quantity IS NOT NULL
+          AND p.stock_quantity < %(threshold)s
+        ORDER BY a.archived_at DESC
+    """, engine, params={"threshold": threshold})
+    return df
+
+
+def _ensure_archived_table():
+    """Create the low_stock_archived table if it doesn't exist."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS low_stock_archived (
+                    product_id  INTEGER PRIMARY KEY,
+                    archived_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def archive_low_stock(product_id: int):
+    """Arquiva um produto do alerta de estoque baixo."""
+    _ensure_archived_table()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO low_stock_archived (product_id)
+                VALUES (%s)
+                ON CONFLICT (product_id) DO NOTHING
+            """, (product_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def unarchive_low_stock(product_id: int):
+    """Desarquiva um produto do alerta de estoque baixo."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM low_stock_archived WHERE product_id = %s", (product_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # ============================================================

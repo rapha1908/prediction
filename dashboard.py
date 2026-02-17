@@ -4,7 +4,7 @@ import subprocess
 import pandas as pd
 import numpy as np
 import dash
-from dash import Dash, html, dcc, callback, Output, Input, State, no_update
+from dash import Dash, html, dcc, callback, Output, Input, State, no_update, ctx, ALL
 import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
@@ -298,13 +298,7 @@ def reload_all_data():
     print(f"  [RELOAD] Done. {total_products} products, {total_sales_qty:,} sales loaded.")
 
 
-# Load small datasets eagerly (used in layout)
-try:
-    low_stock_df = _get_db().load_low_stock(LOW_STOCK_THRESHOLD)
-    print(f"  [OK] Low stock products: {len(low_stock_df)}")
-except Exception:
-    low_stock_df = pd.DataFrame(
-        columns=["product_id", "product_name", "category", "stock_quantity", "status", "price"])
+# Low stock data is now loaded dynamically via callback (supports archive/unarchive)
 
 
 # ============================================================
@@ -664,6 +658,7 @@ app.layout = html.Div(
         dcc.Download(id="report-download"),
         dcc.Store(id="report-trigger", data=None),
         dcc.Store(id="report-cache", data=None),
+        dcc.Store(id="low-stock-refresh", data=0),
 
         # --- HEADER ---
         html.Div(
@@ -783,74 +778,13 @@ app.layout = html.Div(
             # ============ LOW STOCK + SALES SOURCES (50/50 grid) ============
             html.Div(style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "24px", "marginBottom": "28px"}, children=[
 
-                # --- LEFT: Inventory Alert ---
+                # --- LEFT: Inventory Alert (dynamic) ---
                 html.Div(
+                    id="low-stock-container",
                     style={
                         **card_style({"borderLeft": "4px solid #e05555"}),
-                        "display": "block" if not low_stock_df.empty else "flex",
-                        "alignItems": "center", "justifyContent": "center",
                         "minHeight": "200px",
                     },
-                    children=[
-                        html.Div(style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "14px"}, children=[
-                            html.Div(children=[
-                                section_label("INVENTORY ALERT"),
-                                html.H3(f"Low Stock ({len(low_stock_df)} products)", style={
-                                    "margin": "0", "fontSize": "18px", "fontWeight": "700", "color": "#e05555",
-                                }),
-                            ]),
-                            html.Span(f"< {LOW_STOCK_THRESHOLD} units", style={
-                                "fontSize": "12px", "color": COLORS["text_muted"],
-                            }),
-                        ]),
-                        html.Div(style={"overflowX": "auto", "maxHeight": "300px", "overflowY": "auto"}, children=[
-                            html.Table(
-                                style={"width": "100%", "borderCollapse": "collapse", "fontSize": "13px"},
-                                children=[
-                                    html.Thead(children=[
-                                        html.Tr([
-                                            html.Th(col, style={
-                                                "textAlign": "left", "padding": "8px 12px",
-                                                "borderBottom": f"1px solid {COLORS['card_border']}",
-                                                "color": COLORS["text_muted"], "fontWeight": "600",
-                                                "fontSize": "11px", "textTransform": "uppercase",
-                                                "letterSpacing": "0.5px", "position": "sticky", "top": "0",
-                                                "backgroundColor": COLORS["card"],
-                                            }) for col in ["Product", "Stock", "Status"]
-                                        ])
-                                    ]),
-                                    html.Tbody(children=[
-                                        html.Tr(
-                                            style={"borderBottom": f"1px solid {COLORS['card_border']}"},
-                                            children=[
-                                                html.Td(row["product_name"], style={
-                                                    "padding": "6px 12px", "color": COLORS["text"],
-                                                    "maxWidth": "250px", "overflow": "hidden",
-                                                    "textOverflow": "ellipsis", "whiteSpace": "nowrap",
-                                                }),
-                                                html.Td(
-                                                    str(int(row["stock_quantity"])),
-                                                    style={
-                                                        "padding": "6px 12px", "fontWeight": "700",
-                                                        "color": "#e05555" if row["stock_quantity"] == 0
-                                                                else "#e0a030" if row["stock_quantity"] <= 2
-                                                                else COLORS["text"],
-                                                    },
-                                                ),
-                                                html.Td(str(row.get("status", "")), style={
-                                                    "padding": "6px 12px", "color": COLORS["text_muted"],
-                                                }),
-                                            ],
-                                        )
-                                        for _, row in low_stock_df.iterrows()
-                                    ]),
-                                ],
-                            ),
-                        ]) if not low_stock_df.empty else html.P(
-                            "All products have sufficient stock.",
-                            style={"color": COLORS["text_muted"], "fontSize": "13px"},
-                        ),
-                    ],
                 ),
 
                 # --- RIGHT: Sales Sources ---
@@ -1481,6 +1415,171 @@ def update_filters(tab_value):
     cur_value = currencies
 
     return cat_options, cats, cur_options, cur_value
+
+
+# --- Low Stock Inventory Alert (dynamic with archive/unarchive) ---
+def _build_low_stock_table(df, archived=False):
+    """Build the HTML table rows for low stock products."""
+    th_style = {
+        "textAlign": "left", "padding": "8px 12px",
+        "borderBottom": f"1px solid {COLORS['card_border']}",
+        "color": COLORS["text_muted"], "fontWeight": "600",
+        "fontSize": "11px", "textTransform": "uppercase",
+        "letterSpacing": "0.5px", "position": "sticky", "top": "0",
+        "backgroundColor": COLORS["card"],
+    }
+    cols = ["Product", "Stock", "Status", ""]
+    header = html.Thead(children=[
+        html.Tr([html.Th(c, style=th_style) for c in cols])
+    ])
+
+    rows = []
+    for _, row in df.iterrows():
+        pid = int(row["product_id"])
+        btn_id = {"type": "unarchive-btn" if archived else "archive-btn", "index": pid}
+        btn_label = "Unarchive" if archived else "Archive"
+        btn_color = COLORS["accent"] if archived else COLORS["text_muted"]
+        rows.append(html.Tr(
+            style={"borderBottom": f"1px solid {COLORS['card_border']}"},
+            children=[
+                html.Td(row["product_name"], style={
+                    "padding": "6px 12px", "color": COLORS["text"],
+                    "maxWidth": "220px", "overflow": "hidden",
+                    "textOverflow": "ellipsis", "whiteSpace": "nowrap",
+                }),
+                html.Td(
+                    str(int(row["stock_quantity"])),
+                    style={
+                        "padding": "6px 12px", "fontWeight": "700",
+                        "color": "#e05555" if row["stock_quantity"] == 0
+                                else "#e0a030" if row["stock_quantity"] <= 2
+                                else COLORS["text"],
+                    },
+                ),
+                html.Td(str(row.get("status", "")), style={
+                    "padding": "6px 12px", "color": COLORS["text_muted"],
+                }),
+                html.Td(
+                    html.Button(btn_label, id=btn_id, n_clicks=0, style={
+                        "background": "transparent", "border": f"1px solid {btn_color}",
+                        "color": btn_color, "borderRadius": "4px", "cursor": "pointer",
+                        "padding": "3px 10px", "fontSize": "11px", "whiteSpace": "nowrap",
+                    }),
+                    style={"padding": "4px 8px", "textAlign": "right"},
+                ),
+            ],
+        ))
+    return html.Table(
+        style={"width": "100%", "borderCollapse": "collapse", "fontSize": "13px"},
+        children=[header, html.Tbody(children=rows)],
+    )
+
+
+@callback(
+    Output("low-stock-container", "children"),
+    Input("low-stock-refresh", "data"),
+)
+def render_low_stock(_refresh):
+    """Render the low stock inventory alert panel."""
+    try:
+        active_df = _get_db().load_low_stock(LOW_STOCK_THRESHOLD)
+        archived_df = _get_db().load_low_stock_archived(LOW_STOCK_THRESHOLD)
+    except Exception:
+        active_df = pd.DataFrame()
+        archived_df = pd.DataFrame()
+
+    n_active = len(active_df)
+    n_archived = len(archived_df)
+
+    children = [
+        html.Div(style={"display": "flex", "justifyContent": "space-between",
+                         "alignItems": "center", "marginBottom": "14px"}, children=[
+            html.Div(children=[
+                section_label("INVENTORY ALERT"),
+                html.H3(f"Low Stock ({n_active} products)", style={
+                    "margin": "0", "fontSize": "18px", "fontWeight": "700", "color": "#e05555",
+                }),
+            ]),
+            html.Span(f"< {LOW_STOCK_THRESHOLD} units", style={
+                "fontSize": "12px", "color": COLORS["text_muted"],
+            }),
+        ]),
+    ]
+
+    if active_df.empty and archived_df.empty:
+        children.append(html.P(
+            "All products have sufficient stock.",
+            style={"color": COLORS["text_muted"], "fontSize": "13px"},
+        ))
+    else:
+        if not active_df.empty:
+            children.append(
+                html.Div(style={"overflowX": "auto", "maxHeight": "260px", "overflowY": "auto"}, children=[
+                    _build_low_stock_table(active_df, archived=False),
+                ])
+            )
+
+        if n_archived > 0:
+            children.append(
+                html.Details(
+                    style={"marginTop": "12px"},
+                    children=[
+                        html.Summary(
+                            f"Archived ({n_archived})",
+                            style={
+                                "cursor": "pointer", "fontSize": "12px",
+                                "color": COLORS["text_muted"], "userSelect": "none",
+                            },
+                        ),
+                        html.Div(
+                            style={"overflowX": "auto", "maxHeight": "200px",
+                                   "overflowY": "auto", "marginTop": "8px",
+                                   "opacity": "0.7"},
+                            children=[_build_low_stock_table(archived_df, archived=True)],
+                        ),
+                    ],
+                )
+            )
+
+    return children
+
+
+@callback(
+    Output("low-stock-refresh", "data", allow_duplicate=True),
+    Input({"type": "archive-btn", "index": ALL}, "n_clicks"),
+    State("low-stock-refresh", "data"),
+    prevent_initial_call=True,
+)
+def handle_archive_click(n_clicks_list, current):
+    """Archive a product from the low stock alert."""
+    if not ctx.triggered_id or not any(n_clicks_list):
+        return no_update
+    pid = ctx.triggered_id["index"]
+    try:
+        _get_db().archive_low_stock(pid)
+    except Exception as e:
+        print(f"  [WARNING] Could not archive product {pid}: {e}")
+        return no_update
+    return (current or 0) + 1
+
+
+@callback(
+    Output("low-stock-refresh", "data", allow_duplicate=True),
+    Input({"type": "unarchive-btn", "index": ALL}, "n_clicks"),
+    State("low-stock-refresh", "data"),
+    prevent_initial_call=True,
+)
+def handle_unarchive_click(n_clicks_list, current):
+    """Unarchive a product back to the low stock alert."""
+    if not ctx.triggered_id or not any(n_clicks_list):
+        return no_update
+    pid = ctx.triggered_id["index"]
+    try:
+        _get_db().unarchive_low_stock(pid)
+    except Exception as e:
+        print(f"  [WARNING] Could not unarchive product {pid}: {e}")
+        return no_update
+    return (current or 0) + 1
 
 
 # --- Dynamic KPIs ---
