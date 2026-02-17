@@ -231,6 +231,73 @@ def invalidate_lazy_cache():
     _lazy_cache.clear()
 
 
+def reload_all_data():
+    """Reload primary data and all derived globals after a successful sync."""
+    global hist_df, pred_df, metrics_df
+    global _currencies_in_data, exchange_rates
+    global product_cat_map, all_orders_df, orders_cat_map
+    global event_status_map, all_categories, product_sales
+    global total_products, total_sales_qty, total_revenue
+    global total_orders_days, date_min, date_max, pred_total_qty
+
+    print("  [RELOAD] Refreshing all data after sync...")
+
+    # 1. Reload primary data from DB/CSV
+    hist_df, pred_df, metrics_df = load_data()
+
+    # 2. Re-apply exchange rate conversion
+    _currencies_in_data = list(hist_df["currency"].dropna().unique()) if "currency" in hist_df.columns else []
+    rates = get_exchange_rates()
+    exchange_rates = rates
+    hist_df = convert_revenue(hist_df, rates)
+
+    # 3. Rebuild derived structures
+    product_cat_map = build_product_cat_map(hist_df)
+
+    try:
+        all_orders_df = _get_db().load_all_orders()
+    except Exception:
+        all_orders_df = pd.DataFrame(columns=[
+            "order_id", "order_date", "product_id", "product_name",
+            "quantity", "total", "currency", "order_status",
+            "billing_country", "billing_city", "order_source", "category",
+        ])
+
+    orders_cat_map = build_product_cat_map(all_orders_df) if not all_orders_df.empty else {}
+    event_status_map = build_event_status_map()
+
+    all_categories = sorted(set(
+        cat
+        for cats_str in hist_df["category"].dropna().unique()
+        for cat in parse_categories(cats_str)
+        if cat not in GENERIC_CATS
+    ))
+
+    product_sales = (
+        hist_df.groupby("product_id")
+        .agg(
+            product_name=("product_name", "first"),
+            category=("category", "first"),
+            quantity_sold=("quantity_sold", "sum"),
+        )
+        .reset_index()
+        .sort_values("quantity_sold", ascending=False)
+    )
+
+    total_products = hist_df["product_id"].nunique()
+    total_sales_qty = int(hist_df["quantity_sold"].sum())
+    total_revenue = hist_df["revenue"].sum()
+    total_orders_days = hist_df["order_date"].nunique()
+    date_min = hist_df["order_date"].min().strftime("%d/%m/%Y") if not hist_df.empty else "N/A"
+    date_max = hist_df["order_date"].max().strftime("%d/%m/%Y") if not hist_df.empty else "N/A"
+    pred_total_qty = pred_df["predicted_quantity"].sum() if not pred_df.empty else 0
+
+    # 4. Clear lazy caches so they reload with fresh data
+    invalidate_lazy_cache()
+
+    print(f"  [RELOAD] Done. {total_products} products, {total_sales_qty:,} sales loaded.")
+
+
 # Load small datasets eagerly (used in layout)
 try:
     low_stock_df = _get_db().load_low_stock(LOW_STOCK_THRESHOLD)
@@ -2973,7 +3040,7 @@ def poll_sync_progress(n_intervals, is_running):
     if not _sync_state["running"] and _sync_state["exit_code"] is not None:
         exit_code = _sync_state["exit_code"]
         if exit_code == 0:
-            invalidate_lazy_cache()
+            reload_all_data()
             return (
                 log_text, "Done!", False,
                 "Sync complete! Reloading...",
