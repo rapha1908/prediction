@@ -96,16 +96,48 @@ def load_data():
 hist_df, pred_df, metrics_df = load_data()
 
 # ============================================================
-# EXCHANGE RATES & REVENUE CONVERSION (essential - load first)
+# EXCHANGE RATES & REVENUE CONVERSION (lazy HTTP, fast startup)
 # ============================================================
 
 _currencies_in_data = list(hist_df["currency"].dropna().unique()) if "currency" in hist_df.columns else []
-exchange_rates = ai_agent.fetch_exchange_rates(_currencies_in_data)
+
+# Use fallback rates at startup (no HTTP call) for fast startup
+_fallback_rates = ai_agent._FALLBACK_RATES_TO_USD
+_target_cur = DISPLAY_CURRENCY
+_startup_rates = {_target_cur: 1.0}
+for cur in _currencies_in_data:
+    if cur != _target_cur:
+        usd_per_cur = _fallback_rates.get(cur, 1.0)
+        usd_per_target = _fallback_rates.get(_target_cur, 1.0)
+        _startup_rates[cur] = usd_per_cur / usd_per_target if usd_per_target > 0 else usd_per_cur
+
+exchange_rates = _startup_rates
 hist_df = convert_revenue(hist_df, exchange_rates)
+
+# Lazy exchange rate fetcher with 1-hour TTL cache
+_exchange_rate_cache = {"rates": None, "ts": 0}
+_EXCHANGE_RATE_TTL = 3600  # 1 hour
+
+
+def get_exchange_rates():
+    """Return live exchange rates, cached for 1 hour. Falls back to startup rates."""
+    import time
+    now = time.time()
+    if _exchange_rate_cache["rates"] and (now - _exchange_rate_cache["ts"]) < _EXCHANGE_RATE_TTL:
+        return _exchange_rate_cache["rates"]
+    try:
+        live = ai_agent.fetch_exchange_rates(_currencies_in_data)
+        _exchange_rate_cache["rates"] = live
+        _exchange_rate_cache["ts"] = now
+        return live
+    except Exception:
+        return exchange_rates
+
 
 print(f"  Display currency: {DISPLAY_CURRENCY}")
 if len(_currencies_in_data) > 1:
     print(f"  Currencies found: {', '.join(sorted(_currencies_in_data))}")
+    print(f"  Using fallback rates at startup (live rates fetched lazily)")
 
 # ============================================================
 # LAZY-LOADED SECONDARY DATA (loaded on first access)
@@ -128,7 +160,7 @@ def get_hourly_df():
         try:
             df = _get_db().load_hourly_sales()
             if not df.empty:
-                df = convert_revenue(df, exchange_rates)
+                df = convert_revenue(df, get_exchange_rates())
             _lazy_cache["hourly_df"] = df
             print(f"  [OK] Hourly sales loaded: {len(df)} rows")
         except Exception as e:
@@ -243,9 +275,9 @@ def filter_by_categories(df, selected_cats, cat_map):
 
 def explode_categories(df):
     """Expand rows so each category has its own row."""
-    df = df.copy()
-    df["category_list"] = df["category"].apply(parse_categories)
-    return df.explode("category_list").rename(columns={"category_list": "cat_single"})
+    return (df.assign(category_list=df["category"].apply(parse_categories))
+              .explode("category_list")
+              .rename(columns={"category_list": "cat_single"}))
 
 
 # ============================================================
@@ -279,31 +311,24 @@ TODAY = pd.Timestamp.now().normalize()
 ONLINE_COURSE_CATS = {"ONLINE COURSE"}
 
 
-def _is_online_course(pid):
-    """Check if a product belongs to the ONLINE COURSE category."""
-    rows = hist_df[hist_df["product_id"] == pid]
-    if rows.empty:
-        return False
-    cats = set(parse_categories(rows["category"].iloc[0]))
-    return bool(cats & ONLINE_COURSE_CATS)
-
-
 def build_event_status_map():
     """
     Create map product_id -> 'active', 'past', or 'course' based on
     ticket_end_date and category.
     Products in the ONLINE COURSE category are always classified as 'course'.
+    Uses groupby for O(1) lookups instead of repeated DataFrame filtering.
     """
-    # First, collect the most reliable ticket_end_date for each product_id
-    # Priority: hist > pred > metrics (hist has more products)
+    # Build pid -> category string dict via groupby (O(n) once instead of O(n*m))
+    pid_cat_str = hist_df.groupby("product_id")["category"].first().to_dict()
+
+    # Collect the most reliable ticket_end_date for each product_id
+    # Priority: hist > pred > metrics (hist last = highest priority)
     date_by_pid = {}
-    for df in [metrics_df, pred_df, hist_df]:  # hist por ultimo = maior prioridade
+    for df in [metrics_df, pred_df, hist_df]:
         if "ticket_end_date" not in df.columns:
             continue
-        for pid, grp in df.groupby("product_id"):
-            end_vals = grp["ticket_end_date"].dropna()
-            if not end_vals.empty:
-                date_by_pid[pid] = end_vals.iloc[0]
+        end_dates = df.groupby("product_id")["ticket_end_date"].first().dropna()
+        date_by_pid.update(end_dates.to_dict())
 
     # Classify each product
     status_map = {}
@@ -314,7 +339,8 @@ def build_event_status_map():
     # --- Pass 0: Online Courses go to their own tab ---
     course_pids = set()
     for pid in all_pids:
-        if _is_online_course(pid):
+        cats = set(parse_categories(pid_cat_str.get(pid, "")))
+        if cats & ONLINE_COURSE_CATS:
             status_map[pid] = "course"
             course_pids.add(pid)
 
@@ -328,20 +354,18 @@ def build_event_status_map():
             no_date_pids.add(pid)
 
     # --- Pass 2: products WITHOUT ticket_end_date ---
-    # Infer status by category: if none of the specific categories
-    # of this product have ACTIVE products (from pass 1), classify as "past".
     GENERIC_CATS = {"Uncategorized", "Sem categoria", "EVENTS", "LIVESTREAM", "ONLINE COURSE",
                     "THE BREATHWORK REVOLUTION"}
 
-    # Category map -> has active product? (using pass 1 only)
+    # Category map -> has active product? (using pass 1 results + pid_cat_str dict)
     cat_has_active = {}
     for pid_val, st in status_map.items():
         if st == "course":
             continue
-        rows = hist_df[hist_df["product_id"] == pid_val]
-        if rows.empty:
+        cat_str = pid_cat_str.get(pid_val, "")
+        if not cat_str:
             continue
-        for cat in parse_categories(rows["category"].iloc[0]):
+        for cat in parse_categories(cat_str):
             if cat not in GENERIC_CATS:
                 if st == "active":
                     cat_has_active[cat] = True
@@ -349,15 +373,11 @@ def build_event_status_map():
                     cat_has_active[cat] = False
 
     for pid in no_date_pids:
-        rows = hist_df[hist_df["product_id"] == pid]
-        if rows.empty:
+        cat_str = pid_cat_str.get(pid, "")
+        if not cat_str:
             status_map[pid] = "past"
             continue
-
-        # Specific categories of this product
-        product_cats = set(parse_categories(rows["category"].iloc[0])) - GENERIC_CATS
-
-        # If any specific category has an active product -> active
+        product_cats = set(parse_categories(cat_str)) - GENERIC_CATS
         if product_cats and any(cat_has_active.get(c, False) for c in product_cats):
             status_map[pid] = "active"
         else:
@@ -568,6 +588,7 @@ app.layout = html.Div(
         dcc.Interval(id="sync-poll", interval=1500, disabled=True),
         dcc.Download(id="report-download"),
         dcc.Store(id="report-trigger", data=None),
+        dcc.Store(id="report-cache", data=None),
 
         # --- HEADER ---
         html.Div(
@@ -1460,35 +1481,36 @@ def update_daily_report(tab_value, selected_currencies):
 
     today = pd.Timestamp.now().normalize()
 
-    # Products with forecast (sort by 7d total forecast)
-    pred_pids = set(fp["product_id"].unique()) if not fp.empty else set()
-    hist_pids = set(fh["product_id"].unique()) if not fh.empty else set()
-    all_pids = pred_pids | hist_pids
+    # Group DataFrames once for O(1) per-product lookups
+    hist_groups = dict(list(fh.groupby("product_id"))) if not fh.empty else {}
+    pred_groups = dict(list(fp.groupby("product_id"))) if not fp.empty else {}
+    all_pids = set(hist_groups) | set(pred_groups)
 
-    # Build data per product
+    # Pre-compute date range for recent sales lookup
+    recent_date_range = [today - pd.Timedelta(days=7 - i) for i in range(7)]
+
+    # Build data per product using pre-grouped data
     rows_data = []
     for pid in all_pids:
-        ph = fh[fh["product_id"] == pid]
-        pp = fp[fp["product_id"] == pid]
+        ph = hist_groups.get(pid)
+        pp = pred_groups.get(pid)
 
-        pname = ph["product_name"].iloc[-1] if not ph.empty else (pp["product_name"].iloc[0] if not pp.empty else f"#{pid}")
+        pname = ph["product_name"].iloc[-1] if ph is not None else (pp["product_name"].iloc[0] if pp is not None else f"#{pid}")
 
-        # Sales from last 7 days
+        # Sales from last 7 days (use date-indexed series for O(1) lookup)
         recent_sales = {}
-        if not ph.empty:
-            for i in range(7):
-                d = today - pd.Timedelta(days=7 - i)
-                day_data = ph[ph["order_date"] == d]
-                recent_sales[d] = int(day_data["quantity_sold"].sum()) if not day_data.empty else 0
+        if ph is not None:
+            day_totals = ph.groupby("order_date")["quantity_sold"].sum()
+            for d in recent_date_range:
+                recent_sales[d] = int(day_totals.get(d, 0))
 
         # Forecast for next 7 days
         forecast = {}
-        if not pp.empty:
+        if pp is not None:
             pp_sorted = pp.sort_values("order_date")
             for _, row in pp_sorted.head(7).iterrows():
                 forecast[row["order_date"]] = round(row["predicted_quantity"], 1)
 
-        # Total 7d forecast
         total_prev_7d = sum(forecast.values())
         total_recent_7d = sum(recent_sales.values())
 
@@ -1904,9 +1926,10 @@ def update_monthly_revenue(selected_cats, tab_value, selected_currencies):
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
-    filtered = filter_by_currency(filter_by_categories(hist_df, selected_cats, product_cat_map), selected_currencies).copy()
-    filtered = filter_by_event_tab(filtered, tab_value)
-    filtered["month"] = filtered["order_date"].dt.to_period("M").apply(lambda r: r.start_time)
+    filtered = filter_by_event_tab(
+        filter_by_currency(filter_by_categories(hist_df, selected_cats, product_cat_map), selected_currencies),
+        tab_value,
+    ).assign(month=lambda d: d["order_date"].dt.to_period("M").apply(lambda r: r.start_time))
 
     rev_col = "revenue_converted" if "revenue_converted" in filtered.columns else "revenue"
     sym = currency_symbol(DISPLAY_CURRENCY)
@@ -1955,9 +1978,10 @@ def update_weekday_chart(selected_cats, tab_value, selected_currencies):
         return fig
 
     weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    filtered = filter_by_currency(filter_by_categories(hist_df, selected_cats, product_cat_map), selected_currencies).copy()
-    filtered = filter_by_event_tab(filtered, tab_value)
-    filtered["weekday"] = filtered["order_date"].dt.dayofweek
+    filtered = filter_by_event_tab(
+        filter_by_currency(filter_by_categories(hist_df, selected_cats, product_cat_map), selected_currencies),
+        tab_value,
+    ).assign(weekday=lambda d: d["order_date"].dt.dayofweek)
     wd = filtered.groupby("weekday")["quantity_sold"].sum().reset_index()
     wd["weekday_name"] = wd["weekday"].map(lambda x: weekday_names[x])
 
@@ -2303,8 +2327,6 @@ def update_source_chart(_tab):
         fig.update_layout(**PLOT_LAYOUT)
         return fig
 
-    df = _source_df.copy()
-
     # Normalize & map labels
     _SOURCE_LABELS = {
         "typein": "Direct", "direct": "Direct",
@@ -2320,8 +2342,10 @@ def update_source_chart(_tab):
         "tiktok": "TikTok", "affiliation": "Affiliate",
         "speaker_website": "Speaker Website",
     }
-    df["label"] = df["source"].apply(
-        lambda s: _SOURCE_LABELS.get(str(s).lower().strip(), str(s).strip().title())
+    df = _source_df.assign(
+        label=_source_df["source"].apply(
+            lambda s: _SOURCE_LABELS.get(str(s).lower().strip(), str(s).strip().title())
+        )
     )
 
     # Merge rows with same label (e.g. "fb" + "facebook" → "Facebook")
@@ -2476,7 +2500,7 @@ def update_sales_map(tab_value, selected_map_cats, selected_products):
         fig.update_layout(**_map_base)
         return fig
 
-    df = _geo_df.copy()
+    df = _geo_df
 
     # Filter by selected categories (multi-category aware)
     if selected_map_cats:
@@ -2609,7 +2633,7 @@ def update_orders_table(selected_cats, tab_value, selected_currencies, search_te
             [],
         )
 
-    df = all_orders_df.copy()
+    df = all_orders_df
 
     # Filter by event tab
     if tab_value not in ("map",):
@@ -3029,11 +3053,14 @@ def _build_report_charts(selected_cats, tab_value, selected_currencies, product_
         date_range_end = fh["order_date"].max().strftime("%d/%m/%Y")
         analysis_lines.append(f"Data range: {date_range_start} to {date_range_end}")
 
+    # Pre-compute exploded DataFrames (used by timeline + forecast sections)
+    hist_exp = explode_categories(fh) if selected_cats and not fh.empty else pd.DataFrame()
+    pred_exp = explode_categories(fp) if selected_cats and not fp.empty else pd.DataFrame()
+
     # --- 1. Category Timeline ---
     if selected_cats and not fh.empty:
         fig_timeline = go.Figure()
-        exploded = explode_categories(fh)
-        exploded = exploded[exploded["cat_single"].isin(selected_cats)]
+        exploded = hist_exp[hist_exp["cat_single"].isin(selected_cats)]
         for i, cat in enumerate(selected_cats):
             cat_data = exploded[exploded["cat_single"] == cat]
             if cat_data.empty:
@@ -3052,8 +3079,6 @@ def _build_report_charts(selected_cats, tab_value, selected_currencies, product_
     # --- 2. Category Forecast ---
     if selected_cats and not fh.empty:
         fig_fcst = go.Figure()
-        hist_exp = explode_categories(fh)
-        pred_exp = explode_categories(fp) if not fp.empty else pd.DataFrame()
         for i, cat in enumerate(selected_cats):
             h = hist_exp[hist_exp["cat_single"] == cat]
             h_daily = h.groupby("order_date")["quantity_sold"].sum().reset_index()
@@ -3123,8 +3148,7 @@ def _build_report_charts(selected_cats, tab_value, selected_currencies, product_
     # --- 4. Monthly Revenue ---
     if selected_cats and not fh.empty:
         fig_rev = go.Figure()
-        rev_data = fh.copy()
-        rev_data["month"] = rev_data["order_date"].dt.to_period("M").apply(lambda r: r.start_time)
+        rev_data = fh.assign(month=lambda d: d["order_date"].dt.to_period("M").apply(lambda r: r.start_time))
         currencies = sorted(rev_data["currency"].dropna().unique()) if "currency" in rev_data.columns else [DISPLAY_CURRENCY]
         bar_colors = [COLORS["accent3"], COLORS["accent"], COLORS["accent4"],
                       COLORS["accent2"], "#7b8de0", "#e06070"]
@@ -3164,8 +3188,7 @@ def _build_report_charts(selected_cats, tab_value, selected_currencies, product_
     if selected_cats and not fh.empty:
         fig_wd = go.Figure()
         weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        wd_data = fh.copy()
-        wd_data["weekday"] = wd_data["order_date"].dt.dayofweek
+        wd_data = fh.assign(weekday=lambda d: d["order_date"].dt.dayofweek)
         wd = wd_data.groupby("weekday")["quantity_sold"].sum().reset_index()
         wd["weekday_name"] = wd["weekday"].map(lambda x: weekday_names[x])
         colors_wd = [COLORS["accent3"] if x >= 5 else COLORS["accent"] for x in wd["weekday"]]
@@ -3512,6 +3535,7 @@ app.clientside_callback(
 # Step 2: Populate report content (server-side, triggered by Store change)
 @callback(
     Output("report-content", "children"),
+    Output("report-cache", "data"),
     Input("report-trigger", "data"),
     State("category-filter", "value"),
     State("event-tabs", "value"),
@@ -3521,7 +3545,7 @@ app.clientside_callback(
 )
 def generate_report_content(trigger, selected_cats, tab_value,
                             selected_currencies, product_id):
-    """Generate report content (runs after modal is already visible)."""
+    """Generate report content and cache for PDF reuse."""
     if not selected_cats:
         return html.Div(style={"textAlign": "center", "padding": "60px"}, children=[
             html.P("No categories selected.", style={
@@ -3529,7 +3553,7 @@ def generate_report_content(trigger, selected_cats, tab_value,
             }),
             html.P("Select categories in the filter above, then click Generate Report.",
                    style={"color": COLORS["text_muted"], "fontSize": "14px"}),
-        ])
+        ]), None
 
     charts, stats_text, fh, fp, fm = _build_report_charts(
         selected_cats, tab_value, selected_currencies, product_id
@@ -3539,9 +3563,20 @@ def generate_report_content(trigger, selected_cats, tab_value,
         selected_cats, tab_value, selected_currencies, product_id, fh, fp, fm
     )
 
+    # Cache charts as JSON + text for PDF reuse (avoids 2nd AI call)
+    import plotly.io as pio
+    cache_data = {
+        "charts_json": [(title, pio.to_json(fig)) for title, fig in charts],
+        "stats_text": stats_text,
+        "ai_text": ai_text or "",
+        "selected_cats": selected_cats,
+        "tab_value": tab_value,
+        "selected_currencies": selected_currencies,
+        "product_id": product_id,
+    }
+
     report_children = []
 
-    # AI Analysis section (rendered as markdown)
     if ai_text:
         report_children.append(
             html.Div(style=card_style({"marginBottom": "24px",
@@ -3559,7 +3594,6 @@ def generate_report_content(trigger, selected_cats, tab_value,
             ])
         )
 
-    # Statistical summary
     report_children.append(
         html.Div(style=card_style({"marginBottom": "24px"}), children=[
             section_label("STATISTICAL SUMMARY"),
@@ -3575,7 +3609,6 @@ def generate_report_content(trigger, selected_cats, tab_value,
         ])
     )
 
-    # Charts
     for title, fig in charts:
         report_children.append(
             html.Div(style=card_style({"marginBottom": "24px"}), children=[
@@ -3585,7 +3618,7 @@ def generate_report_content(trigger, selected_cats, tab_value,
             ])
         )
 
-    return report_children
+    return report_children, cache_data
 
 
 # Instant spinner on Download PDF click
@@ -3612,26 +3645,38 @@ app.clientside_callback(
     Output("pdf-btn-text", "children", allow_duplicate=True),
     Output("report-download-btn", "disabled", allow_duplicate=True),
     Input("report-download-btn", "n_clicks"),
+    State("report-cache", "data"),
     State("category-filter", "value"),
     State("event-tabs", "value"),
     State("currency-filter", "value"),
     State("product-selector", "value"),
     prevent_initial_call=True,
 )
-def download_report_pdf(n_clicks, selected_cats, tab_value, selected_currencies, product_id):
-    """Generate and download a PDF report with AI analysis and charts."""
+def download_report_pdf(n_clicks, cache, selected_cats, tab_value,
+                        selected_currencies, product_id):
+    """Generate PDF from cached report data (no duplicate AI call)."""
     from datetime import datetime
+    import plotly.io as pio
 
     if not n_clicks or not selected_cats:
         return no_update, no_update, no_update, no_update
 
-    charts, stats_text, fh, fp, fm = _build_report_charts(
-        selected_cats, tab_value, selected_currencies, product_id
-    )
-
-    ai_text = _get_ai_report_analysis(
-        selected_cats, tab_value, selected_currencies, product_id, fh, fp, fm
-    )
+    # Reuse cached data when available (same filters)
+    if (cache
+            and cache.get("selected_cats") == selected_cats
+            and cache.get("tab_value") == tab_value
+            and cache.get("selected_currencies") == selected_currencies
+            and cache.get("product_id") == product_id):
+        charts = [(t, pio.from_json(j)) for t, j in cache["charts_json"]]
+        stats_text = cache["stats_text"]
+        ai_text = cache["ai_text"] or None
+    else:
+        charts, stats_text, fh, fp, fm = _build_report_charts(
+            selected_cats, tab_value, selected_currencies, product_id
+        )
+        ai_text = _get_ai_report_analysis(
+            selected_cats, tab_value, selected_currencies, product_id, fh, fp, fm
+        )
 
     pdf_bytes = _generate_pdf_report(
         charts, stats_text, ai_text,

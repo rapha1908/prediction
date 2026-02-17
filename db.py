@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS orders (
 
 CREATE INDEX IF NOT EXISTS idx_orders_order_date ON orders (order_date);
 CREATE INDEX IF NOT EXISTS idx_orders_product_id ON orders (product_id);
+CREATE INDEX IF NOT EXISTS idx_orders_date_product ON orders (order_date, product_id);
 
 -- Vendas diarias agregadas (materializada a partir de orders)
 CREATE TABLE IF NOT EXISTS daily_sales (
@@ -150,6 +151,7 @@ CREATE TABLE IF NOT EXISTS predictions (
 
 CREATE INDEX IF NOT EXISTS idx_predictions_run_id ON predictions (run_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_product ON predictions (product_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_forecast_date ON predictions (forecast_date);
 
 -- Metricas dos modelos (historico completo por run)
 CREATE TABLE IF NOT EXISTS prediction_metrics (
