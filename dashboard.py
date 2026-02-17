@@ -284,6 +284,15 @@ def explode_categories(df):
 # PREPROCESSING
 # ============================================================
 
+# Generic "type" categories that classify the product kind (EVENTS, LIVESTREAM, etc.)
+# These are excluded from chart breakdowns and filters because the specific event
+# name categories (e.g. "UK - CONFERENCE - LONDON - 2026") are more useful.
+GENERIC_CATS = frozenset({
+    "Uncategorized", "Sem categoria",
+    "EVENTS", "LIVESTREAM", "ONLINE COURSE",
+    "THE BREATHWORK REVOLUTION",
+})
+
 # Category map by product
 product_cat_map = build_product_cat_map(hist_df)
 
@@ -354,8 +363,6 @@ def build_event_status_map():
             no_date_pids.add(pid)
 
     # --- Pass 2: products WITHOUT ticket_end_date ---
-    GENERIC_CATS = {"Uncategorized", "Sem categoria", "EVENTS", "LIVESTREAM", "ONLINE COURSE",
-                    "THE BREATHWORK REVOLUTION"}
 
     # Category map -> has active product? (using pass 1 results + pid_cat_str dict)
     cat_has_active = {}
@@ -392,11 +399,12 @@ n_past = sum(1 for v in event_status_map.values() if v == "past")
 n_courses = sum(1 for v in event_status_map.values() if v == "course")
 print(f"  Events: {n_active} active, {n_past} past, {n_courses} online courses")
 
-# Unique categories (expanded from pipe-separated)
+# Unique categories (expanded from pipe-separated, excluding generic type tags)
 all_categories = sorted(set(
     cat
     for cats_str in hist_df["category"].dropna().unique()
     for cat in parse_categories(cats_str)
+    if cat not in GENERIC_CATS
 ))
 
 # Product list (sorted by total sold, grouped by product_id to avoid duplicates)
@@ -1390,11 +1398,12 @@ def update_filters(tab_value):
     if filtered.empty:
         return [], [], [], []
 
-    # Categories
+    # Categories (exclude generic type tags like EVENTS, LIVESTREAM, etc.)
     cats = sorted(set(
         cat
         for cats_str in filtered["category"].dropna().unique()
         for cat in parse_categories(cats_str)
+        if cat not in GENERIC_CATS
     ))
     cat_options = [{"label": c, "value": c} for c in cats]
 
@@ -2438,6 +2447,7 @@ def update_map_cat_options(tab_value):
         cat
         for cats_str in _geo_df["category"].dropna().unique()
         for cat in parse_categories(cats_str)
+        if cat not in GENERIC_CATS
     ))
     return [{"label": c, "value": c} for c in all_cats]
 
