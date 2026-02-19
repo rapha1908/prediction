@@ -7,7 +7,7 @@ from dash import Dash, html, dcc, callback, Output, Input
 from config import COLORS, FONT
 from data_loader import date_min, date_max
 from pages import stock_manager, forms_manager, settings as settings_page
-from pages import cross_sell, reports, main_dashboard  # noqa: F401 – registers callbacks
+from pages import cross_sell, reports, main_dashboard, google_analytics  # noqa: F401 – registers callbacks
 
 # ============================================================
 # LAYOUT
@@ -173,6 +173,22 @@ app.layout = html.Div(
                             },
                         ),
                         dcc.Link(
+                            "Analytics",
+                            id="header-analytics-link",
+                            href="/analytics",
+                            style={
+                                "color": "#34A853",
+                                "fontSize": "12px",
+                                "textDecoration": "none",
+                                "border": "1px solid #34A853",
+                                "borderRadius": "8px",
+                                "padding": "10px 18px",
+                                "whiteSpace": "nowrap",
+                                "fontFamily": FONT,
+                                "fontWeight": "600",
+                            },
+                        ),
+                        dcc.Link(
                             "Settings",
                             id="header-settings-link",
                             href="/settings",
@@ -271,6 +287,10 @@ app.layout = html.Div(
         html.Div(id="settings-page", style={"display": "none", "padding": "28px 48px", "maxWidth": "1440px", "margin": "0 auto"},
                  children=settings_page.layout()),
 
+        # --- GOOGLE ANALYTICS PAGE (hidden by default, shown on /analytics) ---
+        html.Div(id="analytics-page", style={"display": "none", "padding": "28px 48px", "maxWidth": "1440px", "margin": "0 auto"},
+                 children=google_analytics.layout()),
+
         # --- DASHBOARD CONTENT (main page) ---
         html.Div(id="dashboard-page", style={"padding": "28px 48px", "maxWidth": "1440px", "margin": "0 auto"},
                  children=main_dashboard.layout()),
@@ -292,6 +312,7 @@ app.layout = html.Div(
     Output("forms-page", "style"),
     Output("crosssell-page", "style"),
     Output("settings-page", "style"),
+    Output("analytics-page", "style"),
     Input("url", "pathname"),
 )
 def route_page(pathname):
@@ -299,14 +320,16 @@ def route_page(pathname):
     hidden = {"padding": "28px 48px", "maxWidth": "1440px", "margin": "0 auto", "display": "none"}
     visible = {"padding": "28px 48px", "maxWidth": "1440px", "margin": "0 auto", "display": "block"}
     if pathname == "/stock":
-        return hidden, visible, hidden, hidden, hidden
+        return hidden, visible, hidden, hidden, hidden, hidden
     if pathname == "/forms":
-        return hidden, hidden, visible, hidden, hidden
+        return hidden, hidden, visible, hidden, hidden, hidden
     if pathname == "/cross-sell":
-        return hidden, hidden, hidden, visible, hidden
+        return hidden, hidden, hidden, visible, hidden, hidden
     if pathname == "/settings":
-        return hidden, hidden, hidden, hidden, visible
-    return visible, hidden, hidden, hidden, hidden
+        return hidden, hidden, hidden, hidden, visible, hidden
+    if pathname == "/analytics":
+        return hidden, hidden, hidden, hidden, hidden, visible
+    return visible, hidden, hidden, hidden, hidden, hidden
 
 
 # ============================================================
