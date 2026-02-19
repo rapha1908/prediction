@@ -28,8 +28,8 @@ _IS_RENDER = os.environ.get("RENDER") is not None
 # ============================================================
 
 URL_BASE = os.getenv("WOOCOMMERCE_URL", "https://tcche.org/wp-json/wc/v3/")
-CONSUMER_KEY = os.getenv("WOOCOMMERCE_KEY", "ck_54336e22a72c18dc35961d611bf0f2b5c5e0142d")
-CONSUMER_SECRET = os.getenv("WOOCOMMERCE_SECRET", "cs_196af8ffe0125718a5335d424710add10d5f50a3")
+CONSUMER_KEY = os.getenv("WOOCOMMERCE_KEY", "")
+CONSUMER_SECRET = os.getenv("WOOCOMMERCE_SECRET", "")
 
 AUTH_PARAMS = {
     "consumer_key": CONSUMER_KEY,
