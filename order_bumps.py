@@ -250,6 +250,44 @@ def analytics_daily(bump_id: int | None = None,
     return []
 
 
+# ── Health Check ─────────────────────────────────────────────
+
+def health() -> dict:
+    """Call the plugin health endpoint to verify tables, bump count, etc."""
+    auth = _auth()
+    if not auth:
+        return {"error": "WP_USER / WP_APP_PASSWORD not configured"}
+    try:
+        resp = requests.get(
+            f"{_BASE_URL}/health",
+            auth=auth, headers=_headers(),
+            timeout=_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+        return {"error": f"HTTP {resp.status_code}", "body": resp.text[:300]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def setup() -> dict:
+    """Force-create analytics tables and return health status."""
+    auth = _auth()
+    if not auth:
+        return {"error": "WP_USER / WP_APP_PASSWORD not configured"}
+    try:
+        resp = requests.post(
+            f"{_BASE_URL}/setup",
+            auth=auth, headers=_headers(),
+            timeout=_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+        return {"error": f"HTTP {resp.status_code}", "body": resp.text[:300]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── AI-generated bump copy ──────────────────────────────────
 
 def generate_bump_copy(bump_product_name: str,

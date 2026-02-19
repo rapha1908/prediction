@@ -53,8 +53,6 @@ class TCCHE_OB_Ajax {
         $cart_key = WC()->cart->add_to_cart($bump['bump_product_id'], 1, 0, [], $cart_item_data);
 
         if ($cart_key) {
-            TCCHE_OB_Analytics::track_conversion($bump_id, 0, $bump['bump_price']);
-
             wp_send_json_success([
                 'message'  => __('Added to your order!', 'tcche-order-bump'),
                 'cart_key' => $cart_key,

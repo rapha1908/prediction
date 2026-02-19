@@ -15,7 +15,7 @@
 
 defined('ABSPATH') || exit;
 
-define('TCCHE_OB_VERSION', '1.0.0');
+define('TCCHE_OB_VERSION', '1.0.1');
 define('TCCHE_OB_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('TCCHE_OB_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('TCCHE_OB_PLUGIN_BASENAME', plugin_basename(__FILE__));
@@ -62,6 +62,8 @@ final class TCCHE_Order_Bump {
         register_deactivation_hook(__FILE__, [$this, 'deactivate']);
 
         add_action('init', [TCCHE_OB_Post_Type::class, 'register']);
+        add_action('init', [$this, 'maybe_create_tables']);
+        add_action('init', [$this, 'ensure_session_cookie']);
         add_action('admin_menu', [TCCHE_OB_Admin::class, 'register_menus']);
         add_action('admin_enqueue_scripts', [TCCHE_OB_Admin::class, 'enqueue_assets']);
 
@@ -76,8 +78,28 @@ final class TCCHE_Order_Bump {
         add_action('rest_api_init', [TCCHE_OB_REST_API::class, 'register_routes']);
     }
 
+    public function maybe_create_tables() {
+        $installed_version = get_option('tcche_ob_db_version', '0');
+        if (version_compare($installed_version, TCCHE_OB_VERSION, '<')) {
+            TCCHE_OB_Analytics::create_tables();
+            update_option('tcche_ob_db_version', TCCHE_OB_VERSION);
+        }
+    }
+
+    public function ensure_session_cookie() {
+        if (is_admin() || wp_doing_cron() || defined('REST_REQUEST')) {
+            return;
+        }
+        if (empty($_COOKIE['tcche_ob_sid'])) {
+            $sid = 'ob_' . wp_generate_uuid4();
+            setcookie('tcche_ob_sid', $sid, time() + 3600, COOKIEPATH, COOKIE_DOMAIN, is_ssl(), false);
+            $_COOKIE['tcche_ob_sid'] = $sid;
+        }
+    }
+
     public function activate() {
         TCCHE_OB_Analytics::create_tables();
+        update_option('tcche_ob_db_version', TCCHE_OB_VERSION);
         TCCHE_OB_Post_Type::register();
         flush_rewrite_rules();
     }

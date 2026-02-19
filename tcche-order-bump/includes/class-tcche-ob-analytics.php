@@ -14,29 +14,28 @@ class TCCHE_OB_Analytics {
         $impressions_table = $wpdb->prefix . 'tcche_ob_impressions';
         $conversions_table = $wpdb->prefix . 'tcche_ob_conversions';
 
-        $sql = "CREATE TABLE IF NOT EXISTS {$impressions_table} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            bump_id BIGINT UNSIGNED NOT NULL,
-            session_id VARCHAR(100) DEFAULT '',
-            user_id BIGINT UNSIGNED DEFAULT 0,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            KEY bump_id (bump_id),
-            KEY created_at (created_at)
-        ) {$charset};
-
-        CREATE TABLE IF NOT EXISTS {$conversions_table} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            bump_id BIGINT UNSIGNED NOT NULL,
-            order_id BIGINT UNSIGNED NOT NULL,
-            user_id BIGINT UNSIGNED DEFAULT 0,
-            revenue DECIMAL(10,2) NOT NULL DEFAULT 0,
-            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            KEY bump_id (bump_id),
-            KEY order_id (order_id),
-            KEY created_at (created_at)
-        ) {$charset};";
+        $sql = "CREATE TABLE {$impressions_table} (
+id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+bump_id BIGINT UNSIGNED NOT NULL,
+session_id VARCHAR(100) DEFAULT '',
+user_id BIGINT UNSIGNED DEFAULT 0,
+created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+PRIMARY KEY  (id),
+KEY bump_id (bump_id),
+KEY created_at (created_at)
+) {$charset};
+CREATE TABLE {$conversions_table} (
+id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+bump_id BIGINT UNSIGNED NOT NULL,
+order_id BIGINT UNSIGNED NOT NULL,
+user_id BIGINT UNSIGNED DEFAULT 0,
+revenue DECIMAL(10,2) NOT NULL DEFAULT 0,
+created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+PRIMARY KEY  (id),
+KEY bump_id (bump_id),
+KEY order_id (order_id),
+KEY created_at (created_at)
+) {$charset};";
 
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         dbDelta($sql);
@@ -214,10 +213,41 @@ class TCCHE_OB_Analytics {
         return $days;
     }
 
+    public static function tables_exist() {
+        global $wpdb;
+        $imp  = $wpdb->get_var("SHOW TABLES LIKE '{$wpdb->prefix}tcche_ob_impressions'");
+        $conv = $wpdb->get_var("SHOW TABLES LIKE '{$wpdb->prefix}tcche_ob_conversions'");
+        return !empty($imp) && !empty($conv);
+    }
+
+    public static function health() {
+        global $wpdb;
+        $tables_ok = self::tables_exist();
+        $imp_count = $tables_ok
+            ? (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}tcche_ob_impressions")
+            : null;
+        $conv_count = $tables_ok
+            ? (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}tcche_ob_conversions")
+            : null;
+        $bumps = TCCHE_OB_Post_Type::get_bumps(['post_status' => 'any']);
+
+        return [
+            'plugin_version'  => TCCHE_OB_VERSION,
+            'tables_exist'    => $tables_ok,
+            'total_impressions' => $imp_count,
+            'total_conversions' => $conv_count,
+            'bumps_count'     => count($bumps),
+            'active_bumps'    => count(array_filter($bumps, fn($b) => $b['status'] === 'publish')),
+            'db_version'      => get_option('tcche_ob_db_version', '0'),
+        ];
+    }
+
     private static function get_session_id() {
-        if (!isset($_COOKIE['tcche_ob_sid'])) {
-            return wp_generate_uuid4();
+        if (!empty($_COOKIE['tcche_ob_sid'])) {
+            return sanitize_text_field($_COOKIE['tcche_ob_sid']);
         }
-        return sanitize_text_field($_COOKIE['tcche_ob_sid']);
+        $sid = 'ob_' . wp_generate_uuid4();
+        $_COOKIE['tcche_ob_sid'] = $sid;
+        return $sid;
     }
 }

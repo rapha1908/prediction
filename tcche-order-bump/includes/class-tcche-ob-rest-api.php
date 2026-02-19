@@ -75,6 +75,18 @@ class TCCHE_OB_REST_API {
                 'date_to'   => ['type' => 'string', 'default' => gmdate('Y-m-d')],
             ],
         ]);
+
+        register_rest_route(self::NAMESPACE, '/health', [
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => [__CLASS__, 'get_health'],
+            'permission_callback' => [__CLASS__, 'check_admin_permission'],
+        ]);
+
+        register_rest_route(self::NAMESPACE, '/setup', [
+            'methods'             => WP_REST_Server::CREATABLE,
+            'callback'            => [__CLASS__, 'run_setup'],
+            'permission_callback' => [__CLASS__, 'check_admin_permission'],
+        ]);
     }
 
     // --- Callbacks ---
@@ -160,6 +172,16 @@ class TCCHE_OB_REST_API {
             'date_to'   => $request->get_param('date_to'),
         ]);
         return rest_ensure_response($stats);
+    }
+
+    public static function get_health($request) {
+        return rest_ensure_response(TCCHE_OB_Analytics::health());
+    }
+
+    public static function run_setup($request) {
+        TCCHE_OB_Analytics::create_tables();
+        update_option('tcche_ob_db_version', TCCHE_OB_VERSION);
+        return rest_ensure_response(TCCHE_OB_Analytics::health());
     }
 
     // --- Helpers ---
