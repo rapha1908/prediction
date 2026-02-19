@@ -1,8 +1,11 @@
 """Main dashboard page â€“ layout and callbacks (KPIs, charts, map, AI chat, orders)."""
 import os
+import sys
 import json
 import subprocess
 import threading
+import tempfile
+from pathlib import Path
 import dash
 import pandas as pd
 import numpy as np
@@ -33,6 +36,8 @@ from data_loader import (
     filter_by_event_tab, filter_by_currency,
 )
 
+
+DATA_DIR = Path(__file__).resolve().parent.parent
 
 n_active = sum(1 for v in event_status_map.values() if v == "active")
 n_past = sum(1 for v in event_status_map.values() if v == "past")
@@ -2537,9 +2542,6 @@ def handle_orders_pagination(n_clicks_list, ids):
 # ============================================================
 # SYNC & RETRAIN (background thread + real-time log)
 # ============================================================
-
-import threading
-import tempfile
 
 _SYNC_LOG_FILE = os.path.join(tempfile.gettempdir(), "tcche_sync.log")
 _sync_lock = threading.Lock()
