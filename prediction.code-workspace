@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "prediction",
+			"path": "."
+		},
+		{
+			"name": "tcche-order-bump",
+			"path": "../Site_tcche/TCCHE_EN/public_html/wp-content/plugins/tcche-order-bump"
+		}
+	],
+	"settings": {}
+}

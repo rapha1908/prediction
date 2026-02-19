@@ -281,6 +281,69 @@ CREATE TABLE IF NOT EXISTS stock_manager (
     created_at          TIMESTAMP DEFAULT NOW(),
     updated_at          TIMESTAMP DEFAULT NOW()
 );
+
+-- HubSpot Forms Manager: scraped events/courses
+CREATE TABLE IF NOT EXISTS form_items (
+    id              SERIAL PRIMARY KEY,
+    name            TEXT NOT NULL UNIQUE,
+    item_type       TEXT NOT NULL CHECK (item_type IN ('event', 'course')),
+    first_seen_at   TIMESTAMP DEFAULT NOW(),
+    last_seen_at    TIMESTAMP DEFAULT NOW(),
+    active          BOOLEAN DEFAULT TRUE
+);
+
+-- HubSpot Forms Manager: which items are assigned to which forms
+CREATE TABLE IF NOT EXISTS form_item_assignments (
+    form_key        TEXT NOT NULL,
+    item_id         INTEGER NOT NULL,
+    enabled         BOOLEAN DEFAULT FALSE,
+    assigned_at     TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (form_key, item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fia_form_key ON form_item_assignments (form_key);
+CREATE INDEX IF NOT EXISTS idx_fia_item_id ON form_item_assignments (item_id);
+
+-- RBAC: roles
+CREATE TABLE IF NOT EXISTS roles (
+    id              SERIAL PRIMARY KEY,
+    name            TEXT NOT NULL UNIQUE,
+    description     TEXT DEFAULT '',
+    created_at      TIMESTAMP DEFAULT NOW()
+);
+
+-- RBAC: users (replaces env-var based auth)
+CREATE TABLE IF NOT EXISTS users (
+    id              SERIAL PRIMARY KEY,
+    username        TEXT NOT NULL UNIQUE,
+    password_hash   TEXT NOT NULL,
+    display_name    TEXT DEFAULT '',
+    role_id         INTEGER REFERENCES roles(id) ON DELETE SET NULL,
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMP DEFAULT NOW(),
+    last_login      TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_username ON users (username);
+
+-- RBAC: permissions granted to each role
+CREATE TABLE IF NOT EXISTS role_permissions (
+    role_id         INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    permission_key  TEXT NOT NULL,
+    PRIMARY KEY (role_id, permission_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_rp_role ON role_permissions (role_id);
+
+-- RBAC: per-user permission overrides (grant or deny beyond role)
+CREATE TABLE IF NOT EXISTS user_permission_overrides (
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    permission_key  TEXT NOT NULL,
+    granted         BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (user_id, permission_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_upo_user ON user_permission_overrides (user_id);
 """
 
 
@@ -647,23 +710,132 @@ def load_sales_by_location() -> pd.DataFrame:
 
 
 def load_sales_by_source() -> pd.DataFrame:
-    """Carrega vendas agregadas por source (canal de aquisicao)."""
+    """Carrega vendas agregadas por source (canal de aquisicao) com categoria."""
     engine = _get_engine()
     try:
         df = pd.read_sql("""
             SELECT
-                COALESCE(NULLIF(order_source, ''), 'Direct') AS source,
-                SUM(quantity)       AS quantity_sold,
-                SUM(total::float)   AS revenue,
-                COUNT(DISTINCT order_id) AS order_count
-            FROM orders
-            GROUP BY 1
+                COALESCE(NULLIF(o.order_source, ''), 'Direct') AS source,
+                COALESCE(p.category, 'Sem categoria')          AS category,
+                SUM(o.quantity)       AS quantity_sold,
+                SUM(o.total::float)   AS revenue,
+                COUNT(DISTINCT o.order_id) AS order_count
+            FROM orders o
+            LEFT JOIN products p ON o.product_id = p.id
+            GROUP BY 1, 2
             ORDER BY quantity_sold DESC
         """, engine)
         return df
     except Exception:
-        # Column may not exist yet (before first sync with new schema)
-        return pd.DataFrame(columns=["source", "quantity_sold", "revenue", "order_count"])
+        return pd.DataFrame(columns=["source", "category", "quantity_sold", "revenue", "order_count"])
+
+
+def load_cross_sell_data() -> pd.DataFrame:
+    """
+    Load product co-occurrence pairs from multi-product orders.
+    Returns pairs (product_a, product_b) with frequency and revenue.
+    Only considers orders with 2+ distinct products.
+    """
+    engine = _get_engine()
+    try:
+        df = pd.read_sql("""
+            WITH multi_orders AS (
+                SELECT order_id
+                FROM orders
+                WHERE order_status NOT IN ('cancelled', 'refunded', 'failed')
+                GROUP BY order_id
+                HAVING COUNT(DISTINCT product_id) >= 2
+            )
+            SELECT
+                a.product_id   AS product_a_id,
+                a.product_name AS product_a_name,
+                b.product_id   AS product_b_id,
+                b.product_name AS product_b_name,
+                COALESCE(pa.category, 'Sem categoria') AS category_a,
+                COALESCE(pb.category, 'Sem categoria') AS category_b,
+                COUNT(DISTINCT a.order_id) AS pair_count,
+                SUM(a.quantity + b.quantity) AS total_qty,
+                SUM(a.total + b.total)::float AS total_revenue
+            FROM orders a
+            JOIN orders b ON a.order_id = b.order_id
+                AND a.product_id < b.product_id
+            JOIN multi_orders mo ON a.order_id = mo.order_id
+            LEFT JOIN products pa ON a.product_id = pa.id
+            LEFT JOIN products pb ON b.product_id = pb.id
+            GROUP BY a.product_id, a.product_name,
+                     b.product_id, b.product_name,
+                     pa.category, pb.category
+            ORDER BY pair_count DESC
+        """, engine)
+        return df
+    except Exception as e:
+        print(f"  [WARNING] Could not load cross-sell data: {e}")
+        return pd.DataFrame(columns=[
+            "product_a_id", "product_a_name", "product_b_id", "product_b_name",
+            "category_a", "category_b", "pair_count", "total_qty", "total_revenue",
+        ])
+
+
+def load_multi_order_stats() -> dict:
+    """Load summary stats about multi-product orders."""
+    engine = _get_engine()
+    try:
+        row = pd.read_sql("""
+            WITH order_products AS (
+                SELECT order_id, COUNT(DISTINCT product_id) AS n_products
+                FROM orders
+                WHERE order_status NOT IN ('cancelled', 'refunded', 'failed')
+                GROUP BY order_id
+            )
+            SELECT
+                COUNT(*) AS total_orders,
+                SUM(CASE WHEN n_products >= 2 THEN 1 ELSE 0 END) AS multi_orders,
+                MAX(n_products) AS max_products,
+                AVG(n_products)::float AS avg_products
+            FROM order_products
+        """, engine).iloc[0]
+        return row.to_dict()
+    except Exception:
+        return {"total_orders": 0, "multi_orders": 0, "max_products": 0, "avg_products": 0}
+
+
+def load_multi_product_orders() -> pd.DataFrame:
+    """Load all orders that contain 2+ distinct products, with their line items."""
+    engine = _get_engine()
+    try:
+        df = pd.read_sql("""
+            WITH multi AS (
+                SELECT order_id
+                FROM orders
+                WHERE order_status NOT IN ('cancelled', 'refunded', 'failed')
+                GROUP BY order_id
+                HAVING COUNT(DISTINCT product_id) >= 2
+            )
+            SELECT
+                o.order_id,
+                o.order_date,
+                o.product_id,
+                o.product_name,
+                o.quantity,
+                o.total::float AS total,
+                o.currency,
+                o.billing_country,
+                o.billing_city,
+                COALESCE(p.category, 'Sem categoria') AS category
+            FROM orders o
+            JOIN multi m ON o.order_id = m.order_id
+            LEFT JOIN products p ON o.product_id = p.id
+            ORDER BY o.order_date DESC, o.order_id DESC, o.product_name
+        """, engine)
+        df["order_date"] = pd.to_datetime(df["order_date"])
+        return df
+    except Exception as e:
+        print(f"  [WARNING] Could not load multi-product orders: {e}")
+        return pd.DataFrame(columns=[
+            "order_id", "order_date", "product_id", "product_name",
+            "quantity", "total", "currency", "billing_country",
+            "billing_city", "category",
+        ])
 
 
 def load_all_orders() -> pd.DataFrame:
@@ -1458,3 +1630,662 @@ def get_run_history(limit: int = 10) -> pd.DataFrame:
         ORDER BY MIN(run_date) DESC
         LIMIT %(limit)s
     """, engine, params={"limit": limit})
+
+
+# ============================================================
+# HUBSPOT FORMS MANAGER
+# ============================================================
+
+def _ensure_form_items_tables():
+    """Create form_items and form_item_assignments tables if missing."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS form_items (
+                    id            SERIAL PRIMARY KEY,
+                    name          TEXT NOT NULL UNIQUE,
+                    item_type     TEXT NOT NULL CHECK (item_type IN ('event', 'course')),
+                    first_seen_at TIMESTAMP DEFAULT NOW(),
+                    last_seen_at  TIMESTAMP DEFAULT NOW(),
+                    active        BOOLEAN DEFAULT TRUE
+                );
+                CREATE TABLE IF NOT EXISTS form_item_assignments (
+                    form_key  TEXT NOT NULL,
+                    item_id   INTEGER NOT NULL,
+                    enabled   BOOLEAN DEFAULT FALSE,
+                    assigned_at TIMESTAMP DEFAULT NOW(),
+                    PRIMARY KEY (form_key, item_id)
+                );
+            """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def upsert_form_items(items: list[dict]) -> tuple[int, int]:
+    """
+    Insert or update scraped items.
+    items: list of {"name": str, "item_type": "event"|"course"}
+    Returns (new_count, updated_count).
+    """
+    _ensure_form_items_tables()
+    conn = get_connection()
+    new_count = 0
+    updated_count = 0
+    try:
+        with conn.cursor() as cur:
+            for item in items:
+                cur.execute("""
+                    INSERT INTO form_items (name, item_type)
+                    VALUES (%s, %s)
+                    ON CONFLICT (name) DO UPDATE SET
+                        last_seen_at = NOW(),
+                        active = TRUE
+                    RETURNING (xmax = 0) AS is_new
+                """, (item["name"], item["item_type"]))
+                row = cur.fetchone()
+                if row and row[0]:
+                    new_count += 1
+                else:
+                    updated_count += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return new_count, updated_count
+
+
+def load_form_items() -> pd.DataFrame:
+    """Load all form items (events and courses)."""
+    _ensure_form_items_tables()
+    engine = _get_engine()
+    return pd.read_sql("""
+        SELECT id, name, item_type, first_seen_at, last_seen_at, active
+        FROM form_items
+        ORDER BY item_type, name
+    """, engine)
+
+
+def load_form_assignments() -> pd.DataFrame:
+    """Load all form item assignments."""
+    _ensure_form_items_tables()
+    engine = _get_engine()
+    return pd.read_sql("""
+        SELECT fa.form_key, fa.item_id, fa.enabled,
+               fi.name AS item_name, fi.item_type
+        FROM form_item_assignments fa
+        JOIN form_items fi ON fi.id = fa.item_id
+        ORDER BY fa.form_key, fi.item_type, fi.name
+    """, engine)
+
+
+def ensure_assignments_for_all_forms(form_keys: list[str]):
+    """
+    Make sure every form_items row has an assignment row for each form_key.
+    New assignments default to enabled=FALSE.
+    """
+    _ensure_form_items_tables()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            for fk in form_keys:
+                cur.execute("""
+                    INSERT INTO form_item_assignments (form_key, item_id, enabled)
+                    SELECT %s, fi.id, FALSE
+                    FROM form_items fi
+                    WHERE fi.id NOT IN (
+                        SELECT item_id FROM form_item_assignments WHERE form_key = %s
+                    )
+                """, (fk, fk))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_assignment_enabled(form_key: str, item_id: int, enabled: bool):
+    """Toggle an assignment on or off."""
+    _ensure_form_items_tables()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO form_item_assignments (form_key, item_id, enabled)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (form_key, item_id) DO UPDATE SET enabled = EXCLUDED.enabled
+            """, (form_key, item_id, enabled))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_enabled_items_for_form(form_key: str) -> pd.DataFrame:
+    """Get all enabled items for a specific form."""
+    _ensure_form_items_tables()
+    engine = _get_engine()
+    return pd.read_sql("""
+        SELECT fi.id, fi.name, fi.item_type
+        FROM form_items fi
+        JOIN form_item_assignments fa ON fa.item_id = fi.id
+        WHERE fa.form_key = %(fk)s
+          AND fa.enabled = TRUE
+          AND fi.active = TRUE
+        ORDER BY fi.item_type, fi.name
+    """, engine, params={"fk": form_key})
+
+
+def deactivate_missing_items(current_names: list[str]):
+    """
+    Mark items as inactive if they are no longer found on the website.
+    Does NOT delete them so assignments are preserved.
+    """
+    if not current_names:
+        return
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE form_items SET active = FALSE
+                WHERE name NOT IN %s AND active = TRUE
+            """, (tuple(current_names),))
+            deactivated = cur.rowcount
+        conn.commit()
+        if deactivated:
+            print(f"  [FORMS DB] Deactivated {deactivated} items no longer on website.")
+    finally:
+        conn.close()
+
+
+def sync_assignments_from_hubspot(hubspot_state: dict[str, dict[str, list[str]]]):
+    """
+    Sync assignments from HubSpot's current state.
+    hubspot_state: {form_key: {"events": [names], "courses": [names]}}
+    For each form, enables items that are currently in HubSpot and
+    disables items that are not.
+    Only updates items that exist in form_items table.
+    Returns count of assignments set.
+    """
+    _ensure_form_items_tables()
+    conn = get_connection()
+    count = 0
+    try:
+        with conn.cursor() as cur:
+            # Load all items into a name -> (id, item_type) map
+            cur.execute("SELECT id, name, item_type FROM form_items")
+            item_map = {}
+            for row in cur.fetchall():
+                item_map[row[1]] = (row[0], row[2])  # name -> (id, type)
+
+            for form_key, data in hubspot_state.items():
+                event_names = set(data.get("events", []))
+                course_names = set(data.get("courses", []))
+
+                for item_name, (item_id, item_type) in item_map.items():
+                    # Determine if this item is currently enabled in HubSpot
+                    if item_type == "event":
+                        enabled = item_name in event_names
+                    else:
+                        enabled = item_name in course_names
+
+                    cur.execute("""
+                        INSERT INTO form_item_assignments (form_key, item_id, enabled)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (form_key, item_id) DO UPDATE SET enabled = EXCLUDED.enabled
+                    """, (form_key, item_id, enabled))
+                    count += 1
+
+        conn.commit()
+        print(f"  [FORMS DB] Synced {count} assignments from HubSpot state.")
+    finally:
+        conn.close()
+    return count
+
+
+def has_any_assignments() -> bool:
+    """Check if there are any assignments already in the DB."""
+    _ensure_form_items_tables()
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT EXISTS(SELECT 1 FROM form_item_assignments LIMIT 1)")
+            return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
+# ============================================================
+# RBAC: ROLES, USERS, PERMISSIONS
+# ============================================================
+
+ALL_PERMISSIONS = [
+    # Pages
+    ("page:dashboard",       "Dashboard",        "page"),
+    ("page:stock",           "Stock Manager",     "page"),
+    ("page:forms",           "Forms Manager",     "page"),
+    ("page:crosssell",       "Cross-Sell",        "page"),
+    ("page:settings",        "Settings",          "page"),
+    # Features
+    ("feature:sync",             "Sync & Retrain",        "feature"),
+    ("feature:chat",             "AI Chat",               "feature"),
+    ("feature:report",           "Generate Report",       "feature"),
+    ("feature:stock_replenish",  "Replenish Stock",       "feature"),
+    ("feature:forms_push",       "Push to HubSpot",       "feature"),
+    ("feature:order_bumps",      "Order Bumps",           "feature"),
+]
+
+ALL_PERMISSION_KEYS = [p[0] for p in ALL_PERMISSIONS]
+
+DEFAULT_ROLES = {
+    "admin": {
+        "description": "Full access to everything",
+        "permissions": ALL_PERMISSION_KEYS,
+    },
+    "manager": {
+        "description": "All pages and features except Settings",
+        "permissions": [k for k in ALL_PERMISSION_KEYS if k != "page:settings"],
+    },
+    "viewer": {
+        "description": "Dashboard read-only, no destructive actions",
+        "permissions": [
+            "page:dashboard",
+            "feature:chat",
+            "feature:report",
+        ],
+    },
+}
+
+
+# --- Roles CRUD ---
+
+def list_roles() -> list[dict]:
+    """Return all roles with their permissions."""
+    engine = _get_engine()
+    roles_df = pd.read_sql("SELECT id, name, description, created_at FROM roles ORDER BY id", engine)
+    perms_df = pd.read_sql("SELECT role_id, permission_key FROM role_permissions", engine)
+    perms_map: dict[int, list[str]] = {}
+    for _, row in perms_df.iterrows():
+        perms_map.setdefault(int(row["role_id"]), []).append(row["permission_key"])
+    result = []
+    for _, r in roles_df.iterrows():
+        result.append({
+            "id": int(r["id"]),
+            "name": r["name"],
+            "description": r["description"] or "",
+            "permissions": sorted(perms_map.get(int(r["id"]), [])),
+            "created_at": str(r["created_at"]),
+        })
+    return result
+
+
+def create_role(name: str, description: str = "", permissions: list[str] | None = None) -> int:
+    """Create a role and return its id."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO roles (name, description) VALUES (%s, %s) RETURNING id",
+                (name.strip(), description.strip()),
+            )
+            role_id = cur.fetchone()[0]
+            if permissions:
+                for pk in permissions:
+                    if pk in ALL_PERMISSION_KEYS:
+                        cur.execute(
+                            "INSERT INTO role_permissions (role_id, permission_key) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            (role_id, pk),
+                        )
+        conn.commit()
+        return role_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def update_role(role_id: int, name: str | None = None, description: str | None = None):
+    """Update role name and/or description."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if name is not None:
+                cur.execute("UPDATE roles SET name = %s WHERE id = %s", (name.strip(), role_id))
+            if description is not None:
+                cur.execute("UPDATE roles SET description = %s WHERE id = %s", (description.strip(), role_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def delete_role(role_id: int):
+    """Delete a role (cascades to role_permissions). Users with this role get role_id=NULL."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM roles WHERE id = %s", (role_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def set_role_permissions(role_id: int, permission_keys: list[str]):
+    """Replace all permissions for a role."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM role_permissions WHERE role_id = %s", (role_id,))
+            for pk in permission_keys:
+                if pk in ALL_PERMISSION_KEYS:
+                    cur.execute(
+                        "INSERT INTO role_permissions (role_id, permission_key) VALUES (%s, %s)",
+                        (role_id, pk),
+                    )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+# --- Users CRUD ---
+
+def list_users() -> list[dict]:
+    """Return all users (without password hashes)."""
+    engine = _get_engine()
+    df = pd.read_sql("""
+        SELECT u.id, u.username, u.display_name, u.role_id,
+               COALESCE(r.name, '') AS role_name,
+               u.is_active, u.created_at, u.last_login
+        FROM users u
+        LEFT JOIN roles r ON u.role_id = r.id
+        ORDER BY u.id
+    """, engine)
+    result = []
+    for _, row in df.iterrows():
+        result.append({
+            "id": int(row["id"]),
+            "username": row["username"],
+            "display_name": row["display_name"] or "",
+            "role_id": int(row["role_id"]) if pd.notna(row["role_id"]) else None,
+            "role_name": row["role_name"],
+            "is_active": bool(row["is_active"]),
+            "created_at": str(row["created_at"]),
+            "last_login": str(row["last_login"]) if pd.notna(row["last_login"]) else None,
+        })
+    return result
+
+
+def create_user(username: str, password_hash: str, display_name: str = "",
+                role_id: int | None = None) -> int:
+    """Create a user and return the new id."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO users (username, password_hash, display_name, role_id)
+                VALUES (%s, %s, %s, %s) RETURNING id
+            """, (username.strip().lower(), password_hash, display_name.strip(), role_id))
+            uid = cur.fetchone()[0]
+        conn.commit()
+        return uid
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def update_user(user_id: int, **kwargs):
+    """Update user fields. Allowed: display_name, role_id, is_active, password_hash."""
+    allowed = {"display_name", "role_id", "is_active", "password_hash"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed}
+    if not updates:
+        return
+    set_clause = ", ".join(f"{k} = %s" for k in updates)
+    values = list(updates.values()) + [user_id]
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE users SET {set_clause} WHERE id = %s", values)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def delete_user(user_id: int):
+    """Delete a user (cascades to permission overrides)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def update_last_login(username: str):
+    """Set last_login to now for a user."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET last_login = NOW() WHERE username = %s", (username,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# --- User lookup for auth ---
+
+def load_user_by_username(username: str) -> dict | None:
+    """Load a single user by username. Returns dict or None."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT u.id, u.username, u.password_hash, u.display_name,
+                       u.role_id, COALESCE(r.name, '') AS role_name, u.is_active
+                FROM users u
+                LEFT JOIN roles r ON u.role_id = r.id
+                WHERE u.username = %s
+            """, (username.strip().lower(),))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0],
+                "username": row[1],
+                "password_hash": row[2],
+                "display_name": row[3] or "",
+                "role_id": row[4],
+                "role_name": row[5],
+                "is_active": row[6],
+            }
+    finally:
+        conn.close()
+
+
+def get_user_permissions(user_id: int) -> set[str]:
+    """
+    Compute effective permissions for a user:
+    Start with role permissions, then apply per-user overrides (grant/deny).
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            # Role permissions
+            cur.execute("""
+                SELECT rp.permission_key
+                FROM role_permissions rp
+                JOIN users u ON u.role_id = rp.role_id
+                WHERE u.id = %s
+            """, (user_id,))
+            perms = {row[0] for row in cur.fetchall()}
+
+            # Per-user overrides
+            cur.execute(
+                "SELECT permission_key, granted FROM user_permission_overrides WHERE user_id = %s",
+                (user_id,),
+            )
+            for pk, granted in cur.fetchall():
+                if granted:
+                    perms.add(pk)
+                else:
+                    perms.discard(pk)
+            return perms
+    finally:
+        conn.close()
+
+
+def get_user_overrides(user_id: int) -> list[dict]:
+    """Get per-user permission overrides."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT permission_key, granted FROM user_permission_overrides WHERE user_id = %s ORDER BY permission_key",
+                (user_id,),
+            )
+            return [{"permission_key": r[0], "granted": r[1]} for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def set_user_overrides(user_id: int, overrides: list[dict]):
+    """
+    Replace all overrides for a user.
+    overrides: list of {"permission_key": str, "granted": bool}
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM user_permission_overrides WHERE user_id = %s", (user_id,))
+            for ov in overrides:
+                pk = ov.get("permission_key", "")
+                if pk in ALL_PERMISSION_KEYS:
+                    cur.execute(
+                        "INSERT INTO user_permission_overrides (user_id, permission_key, granted) VALUES (%s, %s, %s)",
+                        (user_id, pk, bool(ov.get("granted", True))),
+                    )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def user_count() -> int:
+    """Return the number of users in the DB."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM users")
+            return cur.fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def _ensure_new_permissions():
+    """Add any new permission keys to existing roles (idempotent migration)."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            for role_name, role_def in DEFAULT_ROLES.items():
+                cur.execute("SELECT id FROM roles WHERE name = %s", (role_name,))
+                row = cur.fetchone()
+                if row:
+                    rid = row[0]
+                    for pk in role_def["permissions"]:
+                        cur.execute(
+                            "INSERT INTO role_permissions (role_id, permission_key) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            (rid, pk),
+                        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def seed_default_roles_and_users():
+    """
+    Seed default roles and migrate users from DASHBOARD_USERS env var on first run.
+    Only runs when the users table is empty.
+    """
+    import bcrypt as _bcrypt
+
+    if user_count() > 0:
+        return
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            # 1. Create default roles
+            role_ids = {}
+            for role_name, role_def in DEFAULT_ROLES.items():
+                cur.execute(
+                    "INSERT INTO roles (name, description) VALUES (%s, %s) ON CONFLICT (name) DO UPDATE SET name=EXCLUDED.name RETURNING id",
+                    (role_name, role_def["description"]),
+                )
+                rid = cur.fetchone()[0]
+                role_ids[role_name] = rid
+                for pk in role_def["permissions"]:
+                    cur.execute(
+                        "INSERT INTO role_permissions (role_id, permission_key) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                        (rid, pk),
+                    )
+
+            # 2. Migrate users from env var
+            import json as _json
+            admin_role_id = role_ids.get("admin", 1)
+            users_json = os.getenv("DASHBOARD_USERS")
+            raw_users = {}
+            if users_json:
+                try:
+                    raw_users = _json.loads(users_json)
+                except (ValueError, TypeError):
+                    pass
+
+            if not raw_users:
+                default_pass = os.getenv("DASHBOARD_PASSWORD", "tcche2025")
+                raw_users = {"admin": default_pass}
+
+            for uname, pwd in raw_users.items():
+                uname = uname.strip().lower()
+                if pwd.startswith("$2b$"):
+                    pw_hash = pwd
+                else:
+                    pw_hash = _bcrypt.hashpw(pwd.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
+                cur.execute("""
+                    INSERT INTO users (username, password_hash, display_name, role_id)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (username) DO NOTHING
+                """, (uname, pw_hash, uname.capitalize(), admin_role_id))
+
+        conn.commit()
+        print(f"  [OK] Seeded {len(DEFAULT_ROLES)} roles and {len(raw_users)} users from env vars.")
+    except Exception as e:
+        conn.rollback()
+        print(f"  [WARNING] Could not seed users/roles: {e}")
+    finally:
+        conn.close()
+
+    # Always sync new permissions to existing default roles
+    _ensure_new_permissions()

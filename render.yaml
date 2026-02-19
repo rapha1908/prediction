@@ -11,7 +11,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn dashboard:server --bind 0.0.0.0:$PORT --workers 1 --threads 4 --preload --timeout 120
+    startCommand: gunicorn app:server --bind 0.0.0.0:$PORT --workers 1 --threads 4 --preload --timeout 120
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -40,6 +40,10 @@ services:
       - key: JWT_SECRET
         sync: false
       - key: DASHBOARD_USERS
+        sync: false
+      - key: WP_USER
+        sync: false
+      - key: WP_APP_PASSWORD
         sync: false
 
   # Data sync cron job (runs main.py daily)

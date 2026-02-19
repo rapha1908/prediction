@@ -84,6 +84,8 @@ TABLES = [
     "predictions",
     "prediction_metrics",
     "geocache",
+    "low_stock_archived",
+    "stock_manager",
 ]
 
 print("\n[3/5] Reading data from local database...")

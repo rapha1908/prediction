@@ -1,0 +1,293 @@
+/* ========================================
+   TCCHE Order Bump – Checkout Offer
+   ======================================== */
+
+.tcche-ob-offer {
+    border: 2px dashed #f0c14b;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #fffdf5 0%, #fff9e6 100%);
+    padding: 0;
+    margin: 20px 0;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.tcche-ob-offer:hover {
+    border-color: #e8a317;
+    box-shadow: 0 2px 12px rgba(240, 193, 75, 0.25);
+}
+
+.tcche-ob-offer--accepted {
+    border-color: #28a745;
+    border-style: solid;
+    background: linear-gradient(135deg, #f0fff4 0%, #e8f5e9 100%);
+}
+
+/* Header */
+.tcche-ob-offer__header {
+    background: #f0c14b;
+    padding: 12px 18px;
+    transition: background 0.3s;
+}
+
+.tcche-ob-offer--accepted .tcche-ob-offer__header {
+    background: #28a745;
+}
+
+.tcche-ob-offer__checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    margin: 0;
+    font-weight: 600;
+}
+
+.tcche-ob-offer__checkbox {
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    accent-color: #28a745;
+}
+
+.tcche-ob-offer__headline {
+    font-size: 16px;
+    color: #1a1a1a;
+    letter-spacing: 0.3px;
+}
+
+.tcche-ob-offer--accepted .tcche-ob-offer__headline {
+    color: #fff;
+}
+
+/* Body */
+.tcche-ob-offer__body {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 18px;
+}
+
+.tcche-ob-offer__image {
+    flex-shrink: 0;
+    width: 80px;
+    height: 80px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #e0e0e0;
+}
+
+.tcche-ob-offer__image img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.tcche-ob-offer__content {
+    flex: 1;
+}
+
+.tcche-ob-offer__product-name {
+    margin: 0 0 6px;
+    font-size: 15px;
+    font-weight: 600;
+    color: #1a1a1a;
+}
+
+.tcche-ob-offer__description {
+    margin: 0 0 10px;
+    font-size: 13px;
+    color: #555;
+    line-height: 1.5;
+}
+
+/* Price */
+.tcche-ob-offer__price {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.tcche-ob-offer__price-original {
+    text-decoration: line-through;
+    color: #999;
+    font-size: 14px;
+}
+
+.tcche-ob-offer__price-bump {
+    font-size: 20px;
+    font-weight: 700;
+    color: #d63638;
+}
+
+.tcche-ob-offer--accepted .tcche-ob-offer__price-bump {
+    color: #28a745;
+}
+
+.tcche-ob-offer__discount-badge {
+    background: #d63638;
+    color: #fff;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+}
+
+/* Loading */
+.tcche-ob-offer__loading {
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 255, 0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+}
+
+.tcche-ob-offer__spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid #e0e0e0;
+    border-top-color: #2271b1;
+    border-radius: 50%;
+    animation: tccheObSpin 0.6s linear infinite;
+}
+
+@keyframes tccheObSpin {
+    to { transform: rotate(360deg); }
+}
+
+/* ========================================
+   Design Presets
+   ======================================== */
+
+/* Classic – already the default style above */
+
+/* Minimal */
+.tcche-ob-offer--minimal {
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    background: #fff;
+}
+
+.tcche-ob-offer--minimal:hover {
+    border-color: #bbb;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+}
+
+.tcche-ob-offer--minimal .tcche-ob-offer__header {
+    background: #f7f7f7;
+}
+
+.tcche-ob-offer--minimal .tcche-ob-offer__headline {
+    font-weight: 500;
+    color: #333;
+}
+
+.tcche-ob-offer--minimal .tcche-ob-offer__discount-badge {
+    background: #555;
+}
+
+/* Bold */
+.tcche-ob-offer--bold {
+    border: 3px solid #2c3e50;
+    border-radius: 0;
+    background: #fff;
+    box-shadow: 4px 4px 0 #2c3e50;
+}
+
+.tcche-ob-offer--bold:hover {
+    border-color: #1a252f;
+    box-shadow: 6px 6px 0 #1a252f;
+}
+
+.tcche-ob-offer--bold .tcche-ob-offer__header {
+    background: #2c3e50;
+}
+
+.tcche-ob-offer--bold .tcche-ob-offer__headline {
+    color: #fff;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 700;
+}
+
+.tcche-ob-offer--bold .tcche-ob-offer__price-bump {
+    color: #e74c3c;
+    font-size: 22px;
+}
+
+.tcche-ob-offer--bold .tcche-ob-offer__discount-badge {
+    background: #e74c3c;
+    border-radius: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Rounded */
+.tcche-ob-offer--rounded {
+    border: 2px solid #6c5ce7;
+    border-radius: 20px;
+    background: linear-gradient(135deg, #f8f7ff 0%, #f0eeff 100%);
+}
+
+.tcche-ob-offer--rounded:hover {
+    border-color: #5a4bd1;
+    box-shadow: 0 4px 20px rgba(108, 92, 231, 0.2);
+}
+
+.tcche-ob-offer--rounded .tcche-ob-offer__header {
+    background: #6c5ce7;
+    border-radius: 18px 18px 0 0;
+}
+
+.tcche-ob-offer--rounded .tcche-ob-offer__headline {
+    color: #fff;
+}
+
+.tcche-ob-offer--rounded .tcche-ob-offer__price-bump {
+    color: #6c5ce7;
+}
+
+.tcche-ob-offer--rounded .tcche-ob-offer__discount-badge {
+    background: #6c5ce7;
+    border-radius: 20px;
+}
+
+.tcche-ob-offer--rounded .tcche-ob-offer__image {
+    border-radius: 12px;
+}
+
+/* Accepted state overrides for all presets */
+.tcche-ob-offer--minimal.tcche-ob-offer--accepted,
+.tcche-ob-offer--bold.tcche-ob-offer--accepted,
+.tcche-ob-offer--rounded.tcche-ob-offer--accepted {
+    border-color: #28a745;
+}
+
+.tcche-ob-offer--bold.tcche-ob-offer--accepted {
+    box-shadow: 4px 4px 0 #28a745;
+}
+
+.tcche-ob-offer--minimal.tcche-ob-offer--accepted .tcche-ob-offer__header,
+.tcche-ob-offer--bold.tcche-ob-offer--accepted .tcche-ob-offer__header,
+.tcche-ob-offer--rounded.tcche-ob-offer--accepted .tcche-ob-offer__header {
+    background: #28a745;
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+    .tcche-ob-offer__body {
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+    }
+
+    .tcche-ob-offer__price {
+        justify-content: center;
+    }
+}
