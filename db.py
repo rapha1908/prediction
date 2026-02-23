@@ -577,6 +577,9 @@ def insert_orders(orders_raw: list, products_df: pd.DataFrame) -> int:
                                     billing_country, billing_state, billing_city, order_source)
                 VALUES %s
                 ON CONFLICT (order_id, product_id) DO UPDATE SET
+                    quantity = EXCLUDED.quantity,
+                    total = EXCLUDED.total,
+                    order_status = EXCLUDED.order_status,
                     currency = EXCLUDED.currency,
                     order_time = EXCLUDED.order_time,
                     billing_country = EXCLUDED.billing_country,

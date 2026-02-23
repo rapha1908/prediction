@@ -572,8 +572,8 @@ def main():
             print("\n[*] Primeira execucao: buscando todos os pedidos...")
         orders_raw = fetch_orders(after_date=None)
     else:
-        # Buscar a partir de 2 dias antes do ultimo sync (margem de seguranca)
-        after = last_sync - timedelta(days=2)
+        # Buscar a partir de 7 dias antes do ultimo sync (margem de seguranca ampliada)
+        after = last_sync - timedelta(days=7)
         print(f"\n[*] Sync incremental (pedidos apos {after})...")
         orders_raw = fetch_orders(after_date=after)
 

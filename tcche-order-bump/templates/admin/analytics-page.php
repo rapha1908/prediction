@@ -72,12 +72,16 @@
     <div class="tcche-ob-analytics__charts">
         <div class="tcche-ob-card tcche-ob-chart-card">
             <h2 class="tcche-ob-card__title"><?php esc_html_e('Daily Performance', 'tcche-order-bump'); ?></h2>
-            <canvas id="tcche-ob-daily-chart" height="300"></canvas>
+            <div class="tcche-ob-chart-wrapper">
+                <canvas id="tcche-ob-daily-chart"></canvas>
+            </div>
         </div>
 
         <div class="tcche-ob-card tcche-ob-chart-card">
             <h2 class="tcche-ob-card__title"><?php esc_html_e('Daily Revenue', 'tcche-order-bump'); ?></h2>
-            <canvas id="tcche-ob-revenue-chart" height="300"></canvas>
+            <div class="tcche-ob-chart-wrapper">
+                <canvas id="tcche-ob-revenue-chart"></canvas>
+            </div>
         </div>
     </div>
 
