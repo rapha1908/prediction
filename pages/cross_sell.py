@@ -122,6 +122,47 @@ def layout():
                         }),
                     ]),
                 ]),
+                # ── Optional product page URL for AI context ──
+                html.Div(style={
+                    "display": "flex", "alignItems": "flex-end", "gap": "12px",
+                    "flexWrap": "wrap", "marginBottom": "16px",
+                    "padding": "12px 16px", "borderRadius": "8px",
+                    "background": "rgba(200,164,78,0.04)",
+                    "border": f"1px solid {COLORS['card_border']}",
+                }, children=[
+                    html.Div(style={"flex": "1", "minWidth": "280px"}, children=[
+                        html.Label(
+                            "🔗 Product Page URL (optional — AI reads the page to write better copy):",
+                            style={
+                                "fontSize": "12px", "color": COLORS["text_muted"],
+                                "marginBottom": "4px", "display": "block",
+                            },
+                        ),
+                        dcc.Input(
+                            id="ob-page-url-input",
+                            type="url",
+                            placeholder="https://tcche.org/produto/nome-do-produto",
+                            debounce=False,
+                            style={
+                                "width": "100%", "backgroundColor": COLORS["card"],
+                                "color": COLORS["text"],
+                                "border": f"1px solid {COLORS['card_border']}",
+                                "borderRadius": "6px", "padding": "8px 12px",
+                                "fontSize": "13px", "fontFamily": FONT,
+                            },
+                        ),
+                    ]),
+                    html.Div(style={"paddingBottom": "2px"}, children=[
+                        html.Span(
+                            "Applies to all AI generation on this page",
+                            style={
+                                "fontSize": "11px", "color": COLORS["text_muted"],
+                                "fontStyle": "italic",
+                            },
+                        ),
+                    ]),
+                ]),
+
                 html.Div(id="ob-status-msg", style={"marginBottom": "12px"}),
                 html.Div(id="ob-existing-bumps", style={"marginBottom": "20px"}),
                 html.Div(id="ob-suggestions-table", style={"overflowX": "auto", "maxHeight": "600px", "overflowY": "auto"}),
@@ -339,6 +380,38 @@ def layout():
                             }),
                         ]),
                         dcc.Store(id="ob-preview-store", data={}),
+                        # ── URL field for AI context ──
+                        html.Div(style={"marginBottom": "14px"}, children=[
+                            html.Label(
+                                "🔗 URL da página do produto (opcional — a IA lê a página e escreve um copy melhor):",
+                                style={
+                                    "fontSize": "12px", "color": COLORS["text_muted"],
+                                    "marginBottom": "4px", "display": "block",
+                                },
+                            ),
+                            html.Div(style={"display": "flex", "gap": "8px", "alignItems": "center"}, children=[
+                                dcc.Input(
+                                    id="ob-preview-url-input",
+                                    type="url",
+                                    placeholder="https://tcche.org/produto/nome-do-produto",
+                                    debounce=False,
+                                    style={
+                                        "flex": "1", "backgroundColor": COLORS["bg"],
+                                        "color": COLORS["text"],
+                                        "border": f"1px solid {COLORS['card_border']}",
+                                        "borderRadius": "6px", "padding": "8px 12px",
+                                        "fontSize": "13px", "fontFamily": FONT,
+                                    },
+                                ),
+                                html.Span(
+                                    "Cole a URL e clique Regenerate",
+                                    style={
+                                        "fontSize": "11px", "color": COLORS["text_muted"],
+                                        "fontStyle": "italic", "whiteSpace": "nowrap",
+                                    },
+                                ),
+                            ]),
+                        ]),
                         html.Div(style={"display": "flex", "gap": "14px", "flexWrap": "wrap", "marginBottom": "12px"}, children=[
                             html.Div(style={"flex": "1", "minWidth": "200px"}, children=[
                                 html.Label("Internal Name (only you see this):", style={
@@ -1093,29 +1166,31 @@ def _compute_uncovered_pids(existing_bumps: list[dict]) -> set:
     Output("ob-preview-title", "value", allow_duplicate=True),
     Output("ob-preview-headline", "value", allow_duplicate=True),
     Output("ob-preview-description", "value", allow_duplicate=True),
+    Output("ob-preview-url-input", "value", allow_duplicate=True),
     Output("ob-create-result", "children"),
     Input({"type": "ob-create-btn", "index": ALL}, "n_clicks"),
+    State("ob-page-url-input", "value"),
     prevent_initial_call=True,
 )
-def handle_suggestion_generate(n_clicks_list):
+def handle_suggestion_generate(n_clicks_list, page_url):
     """When a suggestion 'Create Bump' is clicked, generate AI copy and show preview."""
     if not ctx.triggered_id or not any(n_clicks_list):
-        return no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
     btn_id = ctx.triggered_id
     if not isinstance(btn_id, dict):
-        return no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
     idx = btn_id.get("index", "")
     parts = str(idx).split("_")
     if len(parts) != 2:
-        return no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
     try:
         trigger_pid = int(parts[0])
         bump_pid = int(parts[1])
     except ValueError:
-        return no_update, no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
     cs_df = get_cross_sell_df()
     pair = cs_df[
@@ -1134,19 +1209,20 @@ def handle_suggestion_generate(n_clicks_list):
             trigger_name = str(row["product_b_name"])
             bump_name = str(row["product_a_name"])
 
-    copy = ob_api.generate_bump_copy(bump_name, trigger_name)
+    copy = ob_api.generate_bump_copy(bump_name, trigger_name, page_url=page_url or None)
     store = {
         "bump_pid": bump_pid,
         "trigger_pids": [trigger_pid],
         "bump_name": bump_name, "trigger_name": trigger_name,
         "trigger_mode": "products",
+        "page_url": page_url or None,
     }
     panel_style = {"display": "block"}
     loading_msg = html.Div(
         "AI copy generated â€” review and edit below, then confirm.",
         style={"color": COLORS["accent"], "fontSize": "12px", "fontWeight": "600"},
     )
-    return panel_style, store, copy["title"], copy["headline"], copy["description"], loading_msg
+    return panel_style, store, copy["title"], copy["headline"], copy["description"], page_url or "", loading_msg
 
 
 # â”€â”€ Manual form -> open AI preview â”€â”€
@@ -1157,25 +1233,28 @@ def handle_suggestion_generate(n_clicks_list):
     Output("ob-preview-title", "value", allow_duplicate=True),
     Output("ob-preview-headline", "value", allow_duplicate=True),
     Output("ob-preview-description", "value", allow_duplicate=True),
+    Output("ob-preview-url-input", "value", allow_duplicate=True),
     Output("ob-manual-create-result", "children"),
     Input("ob-manual-create-btn", "n_clicks"),
     State("ob-manual-bump-product", "value"),
     State("ob-trigger-mode", "value"),
     State("ob-manual-trigger-product", "value"),
     State("ob-manual-trigger-category", "value"),
+    State("ob-page-url-input", "value"),
     prevent_initial_call=True,
 )
-def handle_manual_generate(n_clicks, bump_pid, trigger_mode, trigger_pids, trigger_cat_id):
+def handle_manual_generate(n_clicks, bump_pid, trigger_mode, trigger_pids, trigger_cat_id, page_url):
     """Manual form 'Generate with AI' -> generate copy and show preview."""
     _no = no_update
     if not n_clicks or not bump_pid:
-        return (_no, _no, _no, _no, _no,
+        return (_no, _no, _no, _no, _no, _no,
                 html.Div("Please select a product to offer.", style={"color": COLORS["text_muted"], "fontSize": "12px"}))
 
     bump_pid = int(bump_pid)
     bump_name = _resolve_product_name(bump_pid)
 
-    store = {"bump_pid": bump_pid, "bump_name": bump_name, "trigger_mode": trigger_mode}
+    store = {"bump_pid": bump_pid, "bump_name": bump_name, "trigger_mode": trigger_mode,
+             "page_url": page_url or None}
     trigger_product_name = None
     trigger_category_name = None
 
@@ -1195,13 +1274,14 @@ def handle_manual_generate(n_clicks, bump_pid, trigger_mode, trigger_pids, trigg
     else:
         store["trigger_mode"] = "none"
 
-    copy = ob_api.generate_bump_copy(bump_name, trigger_product_name, trigger_category_name)
+    copy = ob_api.generate_bump_copy(bump_name, trigger_product_name, trigger_category_name,
+                                     page_url=page_url or None)
     panel_style = {"display": "block"}
     msg = html.Div(
         "AI copy generated â€” review and edit below, then confirm.",
         style={"color": COLORS["accent"], "fontSize": "12px", "fontWeight": "600"},
     )
-    return panel_style, store, copy["title"], copy["headline"], copy["description"], msg
+    return panel_style, store, copy["title"], copy["headline"], copy["description"], page_url or "", msg
 
 
 # â”€â”€ Regenerate button â”€â”€
@@ -1212,15 +1292,19 @@ def handle_manual_generate(n_clicks, bump_pid, trigger_mode, trigger_pids, trigg
     Output("ob-preview-description", "value", allow_duplicate=True),
     Input("ob-regenerate-btn", "n_clicks"),
     State("ob-preview-store", "data"),
+    State("ob-preview-url-input", "value"),
     prevent_initial_call=True,
 )
-def handle_regenerate(n_clicks, store):
+def handle_regenerate(n_clicks, store, preview_url):
     if not n_clicks or not store:
         return no_update, no_update, no_update
+    # URL from the preview panel field takes priority over the stored one
+    page_url = (preview_url or "").strip() or store.get("page_url") or None
     copy = ob_api.generate_bump_copy(
         store.get("bump_name", ""),
         store.get("trigger_name"),
         store.get("trigger_cat_name"),
+        page_url=page_url,
     )
     return copy["title"], copy["headline"], copy["description"]
 
@@ -1529,9 +1613,10 @@ def update_selected_count(value, options):
     State("ob-autofill-product", "value"),
     State("ob-autofill-random", "value"),
     State("ob-uncovered-checklist", "value"),
+    State("ob-page-url-input", "value"),
     prevent_initial_call=True,
 )
-def handle_autofill(n_clicks, selected_product, random_opts, checked_pids):
+def handle_autofill(n_clicks, selected_product, random_opts, checked_pids, page_url):
     if not n_clicks:
         return no_update
 
@@ -1568,7 +1653,7 @@ def handle_autofill(n_clicks, selected_product, random_opts, checked_pids):
         bump_name = _resolve_product_name(bump_pid)
         trigger_name = _resolve_product_name(trigger_pid)
 
-        copy = ob_api.generate_bump_copy(bump_name, trigger_name)
+        copy = ob_api.generate_bump_copy(bump_name, trigger_name, page_url=page_url or None)
 
         payload = {
             "title": copy["title"],

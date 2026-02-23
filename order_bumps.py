@@ -290,11 +290,88 @@ def setup() -> dict:
 
 # ── AI-generated bump copy ──────────────────────────────────
 
+def _scrape_page_content(url: str) -> str:
+    """Fetch a webpage and extract relevant text content for AI context.
+
+    Returns a condensed string with: Open Graph tags, page title,
+    meta description, all headings, and key paragraphs (max ~3000 chars).
+    Returns empty string on any error.
+    """
+    try:
+        from bs4 import BeautifulSoup
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+        }
+        resp = requests.get(url.strip(), headers=headers, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        parts = []
+
+        # Open Graph title (usually the most descriptive)
+        og_title = soup.find("meta", property="og:title")
+        if og_title and og_title.get("content", "").strip():
+            parts.append(f"Event/Product title: {og_title['content'].strip()}")
+
+        # Open Graph description
+        og_desc = soup.find("meta", property="og:description")
+        if og_desc and og_desc.get("content", "").strip():
+            parts.append(f"Event/Product description: {og_desc['content'].strip()}")
+
+        # Page title (fallback)
+        title_tag = soup.find("title")
+        if title_tag and title_tag.get_text(strip=True):
+            t = title_tag.get_text(strip=True)
+            if not any(t in p for p in parts):
+                parts.append(f"Page title: {t}")
+
+        # Meta description (fallback)
+        meta_desc = soup.find("meta", attrs={"name": "description"})
+        if meta_desc and meta_desc.get("content", "").strip():
+            d = meta_desc["content"].strip()
+            if not any(d in p for p in parts):
+                parts.append(f"Meta description: {d}")
+
+        # All headings H1-H4
+        for tag in ["h1", "h2", "h3", "h4"]:
+            for el in soup.find_all(tag)[:6]:
+                text = el.get_text(strip=True)
+                if text and len(text) > 3:
+                    parts.append(f"{tag.upper()}: {text}")
+
+        # Key paragraphs — keep document order so the most prominent content
+        # (usually at the top of the page, about the main product/speaker) comes first
+        para_count = 0
+        for p in soup.find_all("p"):
+            text = p.get_text(strip=True)
+            if len(text) > 60:
+                parts.append(text)
+                para_count += 1
+                if para_count >= 6:
+                    break
+
+        content = "\n".join(parts)
+        # Limit to ~3000 chars to stay within token budget
+        return content[:3000]
+
+    except Exception as e:
+        print(f"[OrderBumps] _scrape_page_content error for {url}: {e}")
+        return ""
+
+
 def generate_bump_copy(bump_product_name: str,
                        trigger_product_name: str | None = None,
-                       trigger_category_name: str | None = None) -> dict:
+                       trigger_category_name: str | None = None,
+                       page_url: str | None = None) -> dict:
     """Use OpenAI to generate a compelling title, headline and description
     for a checkout order bump.
+
+    If page_url is provided, the page content is scraped and included in
+    the prompt so the AI can write more specific, relevant copy.
 
     Returns dict with keys: title, headline, description.
     Falls back to simple defaults if OpenAI is unavailable.
@@ -323,16 +400,33 @@ def generate_bump_copy(bump_product_name: str,
             f"No trigger — this bump is shown to every customer at checkout."
         )
 
+    # Optionally enrich with scraped page content
+    page_context = ""
+    if page_url and page_url.strip().startswith("http"):
+        scraped = _scrape_page_content(page_url)
+        if scraped:
+            page_context = f"\n\nProduct page content (use this to write specific, relevant copy):\n{scraped}"
+
+    if page_context:
+        page_instruction = (
+            "\n\nIMPORTANT: You MUST use the specific details from the page content above to write the copy. "
+            "Mention the specific speaker name, event name, key benefits, or unique selling points found on the page. "
+            "DO NOT write generic copy like 'Elevate your experience' or 'Don't miss this'. "
+            "The copy must be specific to THIS product based on what you read from the page."
+        )
+    else:
+        page_instruction = ""
+
     prompt = f"""You are a conversion copywriter for an events & courses company called TCCHE.
 Write checkout order-bump copy for the product below.
 
-{context}
+{context}{page_context}{page_instruction}
 
 Return ONLY valid JSON with exactly these keys (no markdown, no extra text):
 {{
   "title": "short internal title (max 60 chars)",
-  "headline": "catchy one-liner shown to customer (max 80 chars)",
-  "description": "1-2 sentence persuasive description with <b>product name</b> in bold HTML (max 200 chars)"
+  "headline": "catchy one-liner shown to customer (max 80 chars) — must reference specific content from the page",
+  "description": "1-2 sentence persuasive description with <b>product name</b> in bold HTML (max 200 chars) — must mention specific speaker, topic, or benefit from the page"
 }}"""
 
     try:
