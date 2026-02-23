@@ -3,7 +3,7 @@
  * Plugin Name: TCCHE Order Bump
  * Plugin URI:  https://tcche.com
  * Description: Order Bump system for WooCommerce with analytics dashboard and REST API.
- * Version:     1.0.0
+ * Version:     1.0.2
  * Author:      TCCHE
  * Author URI:  https://tcche.com
  * Text Domain: tcche-order-bump
@@ -15,7 +15,7 @@
 
 defined('ABSPATH') || exit;
 
-define('TCCHE_OB_VERSION', '1.0.1');
+define('TCCHE_OB_VERSION', '1.0.2');
 define('TCCHE_OB_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('TCCHE_OB_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('TCCHE_OB_PLUGIN_BASENAME', plugin_basename(__FILE__));

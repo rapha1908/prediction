@@ -55,10 +55,13 @@
     font-size: 16px;
     color: #1a1a1a;
     letter-spacing: 0.3px;
+    line-height: 1.12; /* tighter heading spacing */
+    display: inline-block; /* keep headline on same row as checkbox */
 }
 
 .tcche-ob-offer--accepted .tcche-ob-offer__headline {
     color: #fff;
+    line-height: 1.12;
 }
 
 /* Body */
@@ -94,6 +97,7 @@
     font-size: 15px;
     font-weight: 600;
     color: #1a1a1a;
+    line-height: 1.12; /* reduce title line spacing */
 }
 
 .tcche-ob-offer__description {
@@ -186,6 +190,7 @@
 .tcche-ob-offer--minimal .tcche-ob-offer__headline {
     font-weight: 500;
     color: #333;
+    line-height:normal;
 }
 
 .tcche-ob-offer--minimal .tcche-ob-offer__discount-badge {
@@ -214,6 +219,7 @@
     text-transform: uppercase;
     letter-spacing: 1px;
     font-weight: 700;
+    line-height:normal;
 }
 
 .tcche-ob-offer--bold .tcche-ob-offer__price-bump {
@@ -247,6 +253,7 @@
 
 .tcche-ob-offer--rounded .tcche-ob-offer__headline {
     color: #fff;
+    line-height:normal;
 }
 
 .tcche-ob-offer--rounded .tcche-ob-offer__price-bump {
@@ -277,6 +284,14 @@
 .tcche-ob-offer--bold.tcche-ob-offer--accepted .tcche-ob-offer__header,
 .tcche-ob-offer--rounded.tcche-ob-offer--accepted .tcche-ob-offer__header {
     background: #28a745;
+}
+}
+
+/* Force offer headings specificity to override theme styles */
+.tcche-ob-offer .tcche-ob-offer__headline,
+.tcche-ob-offer .tcche-ob-offer__product-name {
+    line-height: 1.12 !important;
+    font-family: inherit !important;
 }
 
 /* Responsive */
