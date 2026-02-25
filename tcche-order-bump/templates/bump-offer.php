@@ -23,7 +23,7 @@ if (WC()->cart) {
                    data-bump-id="<?php echo esc_attr($bump['id']); ?>">
             <span class="tcche-ob-offer__checkmark"></span>
             <span class="tcche-ob-offer__headline">
-                <?php echo esc_html($bump['headline']); ?>
+                <?php echo nl2br(esc_html($bump['headline'])); ?>
             </span>
         </label>
     </div>
@@ -42,9 +42,9 @@ if (WC()->cart) {
             </h4>
 
             <?php if ($bump['description']) : ?>
-                <p class="tcche-ob-offer__description">
-                    <?php echo wp_kses_post($bump['description']); ?>
-                </p>
+                <div class="tcche-ob-offer__description">
+                    <?php echo wp_kses_post(nl2br($bump['description'])); ?>
+                </div>
             <?php endif; ?>
 
             <div class="tcche-ob-offer__price">

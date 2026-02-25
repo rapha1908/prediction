@@ -43,16 +43,16 @@
                         <tr>
                             <th><label for="bump-headline"><?php esc_html_e('Headline', 'tcche-order-bump'); ?></label></th>
                             <td>
-                                <input type="text" id="bump-headline" name="headline" class="regular-text"
-                                       value="<?php echo esc_attr($bump ? $bump['headline'] : 'Special Offer!'); ?>"
-                                       placeholder="<?php esc_attr_e('Special Offer!', 'tcche-order-bump'); ?>">
-                                <p class="description"><?php esc_html_e('Shown as the bump offer title on checkout.', 'tcche-order-bump'); ?></p>
+                                <textarea id="bump-headline" name="headline" class="large-text" rows="2"
+                                       placeholder="<?php esc_attr_e('Special Offer!', 'tcche-order-bump'); ?>"><?php echo esc_textarea($bump ? $bump['headline'] : 'Special Offer!'); ?></textarea>
+                                <p class="description"><?php esc_html_e('Shown as the bump offer title on checkout. Use line breaks for multi-line headlines.', 'tcche-order-bump'); ?></p>
                             </td>
                         </tr>
                         <tr>
                             <th><label for="bump-description"><?php esc_html_e('Description', 'tcche-order-bump'); ?></label></th>
                             <td>
-                                <textarea id="bump-description" name="description" class="large-text" rows="3"><?php echo esc_textarea($bump ? $bump['description'] : ''); ?></textarea>
+                                <textarea id="bump-description" name="description" class="large-text" rows="4"><?php echo esc_textarea($bump ? $bump['description'] : ''); ?></textarea>
+                                <p class="description"><?php esc_html_e('Line breaks will be preserved on checkout.', 'tcche-order-bump'); ?></p>
                             </td>
                         </tr>
                     </table>
