@@ -299,6 +299,23 @@ def layout():
                                 labelStyle={"color": COLORS["text"], "cursor": "pointer"},
                             ),
                         ]),
+                        html.Div(style={"minWidth": "140px"}, children=[
+                            html.Label("Design Preset:", style={
+                                "fontSize": "12px", "color": COLORS["text_muted"], "marginBottom": "4px", "display": "block",
+                            }),
+                            dcc.Dropdown(
+                                id="ob-autofill-design-style",
+                                options=[
+                                    {"label": "Classic", "value": "classic"},
+                                    {"label": "Minimal", "value": "minimal"},
+                                    {"label": "Bold", "value": "bold"},
+                                    {"label": "Rounded", "value": "rounded"},
+                                ],
+                                value="classic",
+                                clearable=False,
+                                style={"backgroundColor": COLORS["bg"], "fontSize": "13px"},
+                            ),
+                        ]),
                         html.Div(style={"paddingBottom": "0px"}, children=[
                             html.Button("Create Offers for Selected", id="ob-autofill-btn", n_clicks=0, style={
                                 "backgroundColor": COLORS["accent"], "color": "#0b0b14",
@@ -434,6 +451,23 @@ def layout():
                                     "borderRadius": "6px", "padding": "8px 12px", "fontSize": "13px",
                                     "fontFamily": FONT,
                                 }),
+                            ]),
+                            html.Div(style={"flex": "1", "minWidth": "160px"}, children=[
+                                html.Label("Design Preset:", style={
+                                    "fontSize": "12px", "color": COLORS["text_muted"], "marginBottom": "4px", "display": "block",
+                                }),
+                                dcc.Dropdown(
+                                    id="ob-preview-design-style",
+                                    options=[
+                                        {"label": "Classic", "value": "classic"},
+                                        {"label": "Minimal", "value": "minimal"},
+                                        {"label": "Bold", "value": "bold"},
+                                        {"label": "Rounded", "value": "rounded"},
+                                    ],
+                                    value="classic",
+                                    clearable=False,
+                                    style={"backgroundColor": COLORS["bg"], "fontSize": "13px"},
+                                ),
                             ]),
                         ]),
                         html.Div(style={"marginBottom": "14px"}, children=[
@@ -1333,9 +1367,10 @@ def handle_cancel_preview(n_clicks):
     State("ob-preview-title", "value"),
     State("ob-preview-headline", "value"),
     State("ob-preview-description", "value"),
+    State("ob-preview-design-style", "value"),
     prevent_initial_call=True,
 )
-def handle_confirm_create(n_clicks, store, title, headline, description):
+def handle_confirm_create(n_clicks, store, title, headline, description, design_style):
     """Actually create the bump with user-edited copy."""
     if not n_clicks or not store:
         return no_update, no_update
@@ -1352,7 +1387,7 @@ def handle_confirm_create(n_clicks, store, title, headline, description):
         "discount_type": "none",
         "discount_value": 0,
         "position": "after_order_review",
-        "design_style": "bold",
+        "design_style": design_style or "classic",
         "priority": 10,
         "status": "publish",
     }
@@ -1612,11 +1647,12 @@ def update_selected_count(value, options):
     Input("ob-autofill-btn", "n_clicks"),
     State("ob-autofill-product", "value"),
     State("ob-autofill-random", "value"),
+    State("ob-autofill-design-style", "value"),
     State("ob-uncovered-checklist", "value"),
     State("ob-page-url-input", "value"),
     prevent_initial_call=True,
 )
-def handle_autofill(n_clicks, selected_product, random_opts, checked_pids, page_url):
+def handle_autofill(n_clicks, selected_product, random_opts, design_style, checked_pids, page_url):
     if not n_clicks:
         return no_update
 
@@ -1663,7 +1699,7 @@ def handle_autofill(n_clicks, selected_product, random_opts, checked_pids, page_
             "discount_type": "none",
             "discount_value": 0,
             "position": "after_order_review",
-            "design_style": "bold",
+            "design_style": design_style or "classic",
             "priority": 10,
             "status": "publish",
             "trigger_product_ids": [trigger_pid],
