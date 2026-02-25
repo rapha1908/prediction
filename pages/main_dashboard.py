@@ -2548,7 +2548,7 @@ _sync_lock = threading.Lock()
 _sync_state = {"running": False, "exit_code": None}
 
 
-def _run_sync_thread():
+def _run_sync_thread(full_mode: bool = False):
     """Run main.py in a background thread, streaming output to a log file."""
     main_py = str(DATA_DIR / "main.py")
     _sync_state["running"] = True
@@ -2557,14 +2557,19 @@ def _run_sync_thread():
     try:
         with open(_SYNC_LOG_FILE, "w", encoding="utf-8") as f:
             f.write("[Starting sync...]\n")
+            if full_mode:
+                f.write("[Mode: FULL - fetching ALL orders from WooCommerce]\n")
             f.flush()
 
             env = os.environ.copy()
             env.setdefault("MPLCONFIGDIR", os.path.join(env.get("TMPDIR", "/tmp"), "matplotlib"))
             env.setdefault("MPLBACKEND", "Agg")
 
+            args = [sys.executable, "-u", main_py]
+            if full_mode:
+                args.append("--full")
             proc = subprocess.Popen(
-                [sys.executable, "-u", main_py],
+                args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -2606,9 +2611,10 @@ def _run_sync_thread():
     Output("sync-poll", "disabled"),
     Output("sync-log-panel", "style"),
     Input("sync-btn", "n_clicks"),
+    State("sync-full-check", "value"),
     prevent_initial_call=True,
 )
-def start_sync(n_clicks):
+def start_sync(n_clicks, full_check):
     """Start background sync when button is clicked."""
     if not n_clicks:
         return no_update, no_update, no_update, no_update, no_update
@@ -2616,10 +2622,12 @@ def start_sync(n_clicks):
     if _sync_state["running"]:
         return True, "Sync already running...", True, False, {"display": "block"}
 
+    full_mode = bool(full_check and "full" in full_check)
+
     with open(_SYNC_LOG_FILE, "w", encoding="utf-8") as f:
         f.write("")
 
-    thread = threading.Thread(target=_run_sync_thread, daemon=True)
+    thread = threading.Thread(target=_run_sync_thread, daemon=True, args=(full_mode,))
     thread.start()
 
     return (

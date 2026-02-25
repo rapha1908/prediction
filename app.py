@@ -108,8 +108,16 @@ app.layout = html.Div(
                             "letterSpacing": "0.5px",
                         }),
                     ]),
-                    html.Div(style={"display": "flex", "gap": "10px", "alignItems": "center"}, children=[
+                    html.Div(style={"display": "flex", "gap": "10px", "alignItems": "center", "flexWrap": "wrap"}, children=[
                         html.Div(id="sync-status", style={"fontSize": "13px", "color": COLORS["text_muted"]}),
+                        dcc.Checklist(
+                            id="sync-full-check",
+                            options=[{"label": " Sync completo (todos os pedidos)", "value": "full"}],
+                            value=[],
+                            style={"display": "flex", "alignItems": "center", "fontSize": "12px", "color": COLORS["text_muted"]},
+                            inputStyle={"marginRight": "6px"},
+                            labelStyle={"cursor": "pointer"},
+                        ),
                         html.Button(
                             "Sync & Retrain",
                             id="sync-btn",
