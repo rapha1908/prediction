@@ -64,7 +64,7 @@ def layout():
             }),
             html.Div(style=card_style({"textAlign": "center", "padding": "60px"}), children=[
                 html.H3("Google Analytics not configured", style={"color": COLORS["text_muted"]}),
-                html.P("Add GA4_PROPERTY_ID and ga4-credentials.json to your .env file.",
+                html.P("Add GA4_PROPERTY_ID and GA4_CREDENTIALS_FILE (path to ga4-credentials.json or JSON inline) to your .env.",
                        style={"color": COLORS["text_muted"], "fontSize": "14px"}),
             ]),
         ]

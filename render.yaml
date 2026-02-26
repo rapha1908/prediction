@@ -50,6 +50,11 @@ services:
         sync: false
       - key: RENDER_CRON_JOB_ID
         sync: false
+      # Google Analytics 4 (Analytics page)
+      - key: GA4_PROPERTY_ID
+        sync: false
+      - key: GA4_CREDENTIALS_FILE
+        sync: false
 
   # Data sync cron job (runs main.py daily)
   - type: cron

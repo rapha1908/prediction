@@ -6,6 +6,7 @@ Fetches traffic, campaign, and Google Ads data via the GA4 Data API.
 import os
 import time
 import json
+import tempfile
 import pandas as pd
 from pathlib import Path
 from dotenv import load_dotenv
@@ -18,6 +19,39 @@ GA4_CREDENTIALS_FILE = os.getenv("GA4_CREDENTIALS_FILE", "ga4-credentials.json")
 _CLIENT = None
 _CACHE = {}
 _CACHE_TTL = 900  # 15 min
+_TEMP_CREDS_FILE = None
+
+
+def _resolve_credentials_path() -> str:
+    """
+    Resolve credentials: supports either a file path or JSON string in env.
+    Returns the path to use for GOOGLE_APPLICATION_CREDENTIALS.
+    """
+    global _TEMP_CREDS_FILE
+    val = GA4_CREDENTIALS_FILE.strip()
+
+    # JSON inline (e.g. from Render env var)
+    if val.startswith("{") or val.startswith('{"'):
+        try:
+            creds = json.loads(val)
+            if isinstance(creds, dict) and "type" in creds and creds.get("type") == "service_account":
+                fd, path = tempfile.mkstemp(suffix=".json", prefix="ga4_creds_")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(creds, f, indent=2)
+                _TEMP_CREDS_FILE = path
+                return path
+        except json.JSONDecodeError:
+            raise ValueError("GA4_CREDENTIALS_FILE contains invalid JSON")
+
+    # File path
+    creds_path = Path(val)
+    if not creds_path.is_absolute():
+        creds_path = Path(__file__).parent / creds_path
+
+    if not creds_path.exists():
+        raise FileNotFoundError(f"GA4 credentials file not found: {creds_path}")
+
+    return str(creds_path)
 
 
 def _get_client():
@@ -29,14 +63,8 @@ def _get_client():
     if not GA4_PROPERTY_ID:
         raise RuntimeError("GA4_PROPERTY_ID not set in .env")
 
-    creds_path = Path(GA4_CREDENTIALS_FILE)
-    if not creds_path.is_absolute():
-        creds_path = Path(__file__).parent / creds_path
-
-    if not creds_path.exists():
-        raise FileNotFoundError(f"GA4 credentials file not found: {creds_path}")
-
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(creds_path)
+    creds_path = _resolve_credentials_path()
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
 
     from google.analytics.data_v1beta import BetaAnalyticsDataClient
     _CLIENT = BetaAnalyticsDataClient()
@@ -224,7 +252,16 @@ def is_configured():
     """Check if GA4 is properly configured."""
     if not GA4_PROPERTY_ID:
         return False
-    creds_path = Path(GA4_CREDENTIALS_FILE)
+    val = (GA4_CREDENTIALS_FILE or "").strip()
+    # JSON inline (e.g. from Render env var)
+    if val.startswith("{") or val.startswith('{"'):
+        try:
+            creds = json.loads(val)
+            return isinstance(creds, dict) and creds.get("type") == "service_account"
+        except json.JSONDecodeError:
+            return False
+    # File path
+    creds_path = Path(val)
     if not creds_path.is_absolute():
         creds_path = Path(__file__).parent / creds_path
     return creds_path.exists()
