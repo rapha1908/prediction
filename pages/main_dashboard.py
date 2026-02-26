@@ -2558,18 +2558,29 @@ def _trigger_render_cron() -> tuple[bool, str]:
     api_key = os.environ.get("RENDER_API_KEY", "").strip()
     cron_id = os.environ.get("RENDER_CRON_JOB_ID", "").strip()
     if not api_key or not cron_id:
-        return False, "Configure RENDER_API_KEY e RENDER_CRON_JOB_ID nas variáveis de ambiente do Render."
+        return False, (
+            "Configure RENDER_API_KEY e RENDER_CRON_JOB_ID no Render Dashboard "
+            "(tcche-dashboard → Environment). O ID está na URL do Cron Job tcche-sync (ex: crn-xxx ou srv-xxx)."
+        )
     try:
         resp = requests.post(
             f"https://api.render.com/v1/cron-jobs/{cron_id}/runs",
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
             timeout=30,
         )
         if resp.status_code in (200, 201):
             return True, "Cron Job acionado! O sync está rodando em background. Atualize a página em alguns minutos."
-        return False, f"API Render retornou {resp.status_code}: {resp.text[:200]}"
+        err_body = (resp.text or "").strip()[:250]
+        if resp.status_code == 404:
+            return False, (
+                f"ID do Cron inválido (404). No Render: abra tcche-sync, copie o ID da URL. "
+                f"Ex: crn-xxx ou srv-xxx. Alternativa: Dashboard → tcche-sync → Trigger."
+            )
+        if resp.status_code == 401:
+            return False, "API Key inválida (401). Crie em Account Settings → API Keys."
+        return False, f"API {resp.status_code}: {err_body or 'sem detalhes'}"
     except requests.RequestException as e:
-        return False, str(e)
+        return False, f"Erro de rede: {e}. Alternativa: Render Dashboard → tcche-sync → Trigger."
 
 
 def _run_sync_thread(full_mode: bool = False):
