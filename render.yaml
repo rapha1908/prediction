@@ -55,6 +55,9 @@ services:
         sync: false
       - key: GA4_CREDENTIALS_FILE
         sync: false
+      # Google Sheets (Update Google Sheet button)
+      - key: GOOGLE_SHEETS_SPREADSHEET_ID
+        sync: false
 
   # Data sync cron job (runs main.py daily)
   - type: cron

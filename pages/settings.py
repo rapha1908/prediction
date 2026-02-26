@@ -194,6 +194,7 @@ def load_user_permissions(_pathname):
     Output("header-crosssell-link", "style"),
     Output("header-settings-link", "style"),
     Output("sync-btn", "style"),
+    Output("sheets-update-btn", "style"),
     Output("chat-section", "style"),
     Output("report-btn", "style"),
     Input("current-user-perms", "data"),
@@ -242,10 +243,17 @@ def enforce_permissions(perms):
     crosssell_style = _link_visible if "page:crosssell" in perms else _link_hidden
     settings_style = _settings_visible if "page:settings" in perms else _settings_hidden
     sync_style = _sync_visible if "feature:sync" in perms else _sync_hidden
+    _sheets_visible = {
+        "backgroundColor": "#34A853", "color": "#fff", "border": "none", "borderRadius": "8px",
+        "padding": "10px 20px", "fontSize": "13px", "fontWeight": "700", "cursor": "pointer",
+        "fontFamily": FONT, "letterSpacing": "0.5px", "whiteSpace": "nowrap",
+    }
+    _sheets_hidden = {**_sheets_visible, "display": "none"}
+    sheets_style = _sheets_visible if "feature:sync" in perms else _sheets_hidden
     chat_style = _chat_visible if "feature:chat" in perms else _chat_hidden
     report_style = _report_visible if "feature:report" in perms else _report_hidden
 
-    return stock_style, forms_style, crosssell_style, settings_style, sync_style, chat_style, report_style
+    return stock_style, forms_style, crosssell_style, settings_style, sync_style, sheets_style, chat_style, report_style
 
 
 @callback(

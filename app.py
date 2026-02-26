@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from dash import Dash, html, dcc, callback, Output, Input
+from dash import Dash, html, dcc, callback, Output, Input, no_update
 from config import COLORS, FONT
 from data_loader import date_min, date_max
 from pages import stock_manager, forms_manager, settings as settings_page
@@ -132,6 +132,21 @@ app.layout = html.Div(
                                 "whiteSpace": "nowrap",
                             },
                         ),
+                        html.Button(
+                            "Update Google Sheet",
+                            id="sheets-update-btn",
+                            n_clicks=0,
+                            style={
+                                "backgroundColor": "#34A853",
+                                "color": "#fff",
+                                "border": "none", "borderRadius": "8px",
+                                "padding": "10px 20px", "fontSize": "13px",
+                                "fontWeight": "700", "cursor": "pointer",
+                                "fontFamily": FONT, "letterSpacing": "0.5px",
+                                "whiteSpace": "nowrap",
+                            },
+                        ),
+                        html.Span(id="sheets-update-status", style={"fontSize": "12px", "color": COLORS["text_muted"]}),
                         dcc.Link(
                             "Stock Manager",
                             id="header-stock-link",
@@ -338,6 +353,27 @@ def route_page(pathname):
     if pathname == "/analytics":
         return hidden, hidden, hidden, hidden, hidden, visible
     return visible, hidden, hidden, hidden, hidden, hidden
+
+
+# ============================================================
+# GOOGLE SHEETS UPDATE
+# ============================================================
+
+@callback(
+    Output("sheets-update-btn", "disabled"),
+    Output("sheets-update-status", "children"),
+    Input("sheets-update-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def update_google_sheet(n_clicks):
+    if not n_clicks:
+        return no_update, no_update
+    try:
+        import google_sheets_sales as gs
+        added, msg = gs.update_sheet()
+        return False, msg
+    except Exception as e:
+        return False, f"Erro: {e}"
 
 
 # ============================================================
