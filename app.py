@@ -1,4 +1,5 @@
 import os
+import threading
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -368,12 +369,24 @@ def route_page(pathname):
 def update_google_sheet(n_clicks):
     if not n_clicks:
         return no_update, no_update
-    try:
-        import google_sheets_sales as gs
-        added, msg = gs.update_sheet()
-        return False, msg
-    except Exception as e:
-        return False, f"Erro: {e}"
+    print("[Sheets] Botão clicado - iniciando atualização...", flush=True)
+    result = [None]
+
+    def run():
+        try:
+            import google_sheets_sales as gs
+            result[0] = gs.update_sheet()
+        except Exception as e:
+            result[0] = (0, f"Erro: {e}")
+
+    t = threading.Thread(target=run)
+    t.start()
+    t.join(timeout=180)  # 3 min - WooCommerce pode ter muitos pedidos
+    if t.is_alive():
+        print("[Sheets] Timeout após 3 min - operação cancelada", flush=True)
+        return False, "Timeout: a operação demorou mais de 3 minutos. Tente novamente."
+    added, msg = result[0]
+    return False, msg
 
 
 # ============================================================
