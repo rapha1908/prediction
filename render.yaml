@@ -45,6 +45,11 @@ services:
         sync: false
       - key: WP_APP_PASSWORD
         sync: false
+      # Para "Sync & Retrain" acionar o Cron Job via API (evita exceder memória)
+      - key: RENDER_API_KEY
+        sync: false
+      - key: RENDER_CRON_JOB_ID
+        sync: false
 
   # Data sync cron job (runs main.py daily)
   - type: cron

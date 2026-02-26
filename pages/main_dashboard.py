@@ -5,6 +5,7 @@ import json
 import subprocess
 import threading
 import tempfile
+import requests
 from pathlib import Path
 import dash
 import pandas as pd
@@ -2543,9 +2544,32 @@ def handle_orders_pagination(n_clicks_list, ids):
 # SYNC & RETRAIN (background thread + real-time log)
 # ============================================================
 
+_IS_RENDER = os.environ.get("RENDER") is not None
 _SYNC_LOG_FILE = os.path.join(tempfile.gettempdir(), "tcche_sync.log")
 _sync_lock = threading.Lock()
 _sync_state = {"running": False, "exit_code": None}
+
+
+def _trigger_render_cron() -> tuple[bool, str]:
+    """
+    Trigger the tcche-sync Cron Job via Render API.
+    Returns (success, message).
+    """
+    api_key = os.environ.get("RENDER_API_KEY", "").strip()
+    cron_id = os.environ.get("RENDER_CRON_JOB_ID", "").strip()
+    if not api_key or not cron_id:
+        return False, "Configure RENDER_API_KEY e RENDER_CRON_JOB_ID nas variáveis de ambiente do Render."
+    try:
+        resp = requests.post(
+            f"https://api.render.com/v1/cron-jobs/{cron_id}/runs",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            return True, "Cron Job acionado! O sync está rodando em background. Atualize a página em alguns minutos."
+        return False, f"API Render retornou {resp.status_code}: {resp.text[:200]}"
+    except requests.RequestException as e:
+        return False, str(e)
 
 
 def _run_sync_thread(full_mode: bool = False):
@@ -2610,6 +2634,8 @@ def _run_sync_thread(full_mode: bool = False):
     Output("sync-running", "data"),
     Output("sync-poll", "disabled"),
     Output("sync-log-panel", "style"),
+    Output("sync-log", "children"),
+    Output("sync-step", "children"),
     Input("sync-btn", "n_clicks"),
     State("sync-full-check", "value"),
     prevent_initial_call=True,
@@ -2617,10 +2643,24 @@ def _run_sync_thread(full_mode: bool = False):
 def start_sync(n_clicks, full_check):
     """Start background sync when button is clicked."""
     if not n_clicks:
-        return no_update, no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
 
     if _sync_state["running"]:
-        return True, "Sync already running...", True, False, {"display": "block"}
+        return True, "Sync already running...", True, False, {"display": "block"}, no_update, no_update
+
+    # Em produção (Render): acionar Cron Job via API em vez de subprocess (evita exceder memória)
+    if _IS_RENDER:
+        ok, msg = _trigger_render_cron()
+        log_text = msg if ok else f"[Erro] {msg}"
+        return (
+            False,
+            msg,
+            False,
+            True,
+            {"display": "block"},
+            log_text,
+            "Done" if ok else "Failed",
+        )
 
     full_mode = bool(full_check and "full" in full_check)
 
@@ -2636,6 +2676,8 @@ def start_sync(n_clicks, full_check):
         True,
         False,
         {"display": "block"},
+        no_update,
+        no_update,
     )
 
 
