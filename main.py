@@ -640,6 +640,18 @@ def main():
     else:
         print("\n[OK] Producao: dados salvos no banco (CSVs desativados).")
 
+    # --- 10. Auto-Replenish (Stock Manager) ---
+    print("\n[*] Executando Auto-Replenish (Stock Manager)...")
+    try:
+        actions = db.auto_replenish_stock()
+        if actions:
+            n_ok = sum(1 for a in actions if a.get("success"))
+            print(f"  [OK] Auto-replenish: {n_ok}/{len(actions)} produtos atualizados no WooCommerce.")
+        else:
+            print("  [OK] Nenhum produto precisou de reposicao.")
+    except Exception as e:
+        print(f"  [AVISO] Auto-replenish falhou: {e}")
+
     # Liberar memoria
     gc.collect()
     print("\n[OK] Sync finalizado com sucesso.")
