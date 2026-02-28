@@ -13,7 +13,7 @@ matplotlib.use("Agg")
 import pandas as pd
 import numpy as np
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 warnings.filterwarnings("ignore")
 
@@ -144,20 +144,31 @@ def fetch_orders(after_date=None) -> list:
     """
     Busca pedidos completed e processing da API.
     Se after_date for fornecido, busca apenas pedidos apos essa data (incremental).
+    Usa dates_are_gmt=true e timestamps UTC para garantir vendas ate o momento atual.
     Retorna lista de dicts brutos da API.
     """
     print("\n[*] Buscando pedidos...")
     all_orders = []
 
     for status in ["completed", "processing"]:
-        extra = {"status": status}
+        extra = {"status": status, "dates_are_gmt": "true"}
         if after_date:
-            # API WooCommerce aceita 'after' como ISO 8601
-            iso_date = pd.to_datetime(after_date).isoformat()
-            extra["after"] = iso_date
-            print(f"  Buscando '{status}' apos {iso_date}...")
+            # ISO 8601 em UTC para evitar problemas de timezone na API WooCommerce
+            ts = pd.Timestamp(after_date)
+            after_utc = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+            iso_after = after_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            extra["after"] = iso_after
+            # Garantir que inclui pedidos ate AGORA (evita cortar vendas do dia)
+            now_utc = datetime.now(timezone.utc)
+            iso_before = (now_utc + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            extra["before"] = iso_before
+            print(f"  Buscando '{status}' entre {iso_after} e {iso_before}...")
         else:
-            print(f"  Buscando todos com status '{status}'...")
+            # Sync completo: incluir ate o momento atual
+            now_utc = datetime.now(timezone.utc)
+            iso_before = (now_utc + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            extra["before"] = iso_before
+            print(f"  Buscando todos com status '{status}' (ate {iso_before})...")
 
         orders = fetch_all_pages("orders", extra_params=extra)
         all_orders.extend(orders)
