@@ -470,6 +470,40 @@ def layout():
                                     style={"backgroundColor": COLORS["bg"], "fontSize": "13px"},
                                 ),
                             ]),
+                            html.Div(style={"flex": "1", "minWidth": "120px"}, children=[
+                                html.Label("Discount Type:", style={
+                                    "fontSize": "12px", "color": COLORS["text_muted"], "marginBottom": "4px", "display": "block",
+                                }),
+                                dcc.Dropdown(
+                                    id="ob-preview-discount-type",
+                                    options=[
+                                        {"label": "No Discount", "value": "none"},
+                                        {"label": "Percentage %", "value": "percentage"},
+                                        {"label": "Fixed Amount", "value": "fixed"},
+                                    ],
+                                    value="none",
+                                    clearable=False,
+                                    style={"backgroundColor": COLORS["bg"], "fontSize": "13px"},
+                                ),
+                            ]),
+                            html.Div(style={"flex": "0 0 100px", "minWidth": "80px"}, children=[
+                                html.Label("Discount Value:", style={
+                                    "fontSize": "12px", "color": COLORS["text_muted"], "marginBottom": "4px", "display": "block",
+                                }),
+                                dcc.Input(
+                                    id="ob-preview-discount-value",
+                                    type="number",
+                                    min=0,
+                                    step=0.01,
+                                    value=0,
+                                    style={
+                                        "width": "100%", "backgroundColor": COLORS["card"],
+                                        "color": COLORS["text"], "border": f"1px solid {COLORS['card_border']}",
+                                        "borderRadius": "6px", "padding": "8px 12px", "fontSize": "13px",
+                                        "fontFamily": FONT,
+                                    },
+                                ),
+                            ]),
                         ]),
                         html.Div(style={"marginBottom": "14px"}, children=[
                             html.Label("Description (below headline; supports <b>bold</b> HTML; line breaks preserved on checkout):", style={
@@ -1396,27 +1430,30 @@ def handle_regenerate(n_clicks, store, preview_url):
     Output("ob-preview-description", "value", allow_duplicate=True),
     Output("ob-preview-url-input", "value", allow_duplicate=True),
     Output("ob-preview-design-style", "value", allow_duplicate=True),
+    Output("ob-preview-discount-type", "value", allow_duplicate=True),
+    Output("ob-preview-discount-value", "value", allow_duplicate=True),
     Input({"type": "ob-edit-btn", "index": ALL}, "n_clicks"),
     prevent_initial_call=True,
 )
 def handle_edit_bump(n_clicks_list):
     """When Edit is clicked, load bump data and show preview panel."""
+    no_updates = (no_update,) * 9
     if not ctx.triggered_id or not any(n_clicks_list):
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return no_updates
 
     btn_id = ctx.triggered_id
     if not isinstance(btn_id, dict):
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return no_updates
 
     bump_id = btn_id.get("index")
     try:
         bump_id = int(bump_id)
     except (ValueError, TypeError):
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return no_updates
 
     bump = ob_api.get_bump(bump_id)
     if not bump:
-        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return no_updates
 
     trigger_pids = bump.get("trigger_product_ids") or []
     trigger_cat_ids = bump.get("trigger_category_ids") or []
@@ -1447,6 +1484,9 @@ def handle_edit_bump(n_clicks_list):
         "trigger_cat_name": trigger_cat_name,
     }
 
+    discount_type = bump.get("discount_type") or "none"
+    discount_value = float(bump.get("discount_value", 0)) if bump.get("discount_value") else 0
+
     return (
         {"display": "block"},
         store,
@@ -1455,6 +1495,8 @@ def handle_edit_bump(n_clicks_list):
         bump.get("description") or "",
         "",
         bump.get("design_style") or "classic",
+        discount_type,
+        discount_value,
     )
 
 @callback(
@@ -1480,9 +1522,11 @@ def handle_cancel_preview(n_clicks):
     State("ob-preview-headline", "value"),
     State("ob-preview-description", "value"),
     State("ob-preview-design-style", "value"),
+    State("ob-preview-discount-type", "value"),
+    State("ob-preview-discount-value", "value"),
     prevent_initial_call=True,
 )
-def handle_confirm_create(n_clicks, store, title, headline, description, design_style):
+def handle_confirm_create(n_clicks, store, title, headline, description, design_style, discount_type, discount_value):
     """Create or update the bump with user-edited copy."""
     if not n_clicks or not store:
         return no_update, no_update
@@ -1491,12 +1535,25 @@ def handle_confirm_create(n_clicks, store, title, headline, description, design_
     if not bump_pid:
         return "Missing product data.", no_update
 
+    discount_type = discount_type or "none"
+    if discount_type == "none":
+        discount_val = 0
+    else:
+        try:
+            discount_val = float(discount_value) if discount_value is not None else 0
+        except (TypeError, ValueError):
+            discount_val = 0
+        if discount_val < 0:
+            discount_val = 0
+
     payload = {
         "title": title or f"Bump: {store.get('bump_name', '')}",
         "bump_product_id": int(bump_pid),
         "headline": headline or "Don't miss this!",
         "description": description or "",
         "design_style": design_style or "classic",
+        "discount_type": discount_type,
+        "discount_value": discount_val,
     }
 
     mode = store.get("trigger_mode", "none")
@@ -1514,8 +1571,6 @@ def handle_confirm_create(n_clicks, store, title, headline, description, design_
         result = ob_api.update_bump(int(edit_id), payload)
     else:
         payload.update({
-            "discount_type": "none",
-            "discount_value": 0,
             "position": "after_order_review",
             "priority": 10,
             "status": "publish",
