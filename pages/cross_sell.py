@@ -1769,6 +1769,25 @@ def handle_delete_all_bumps(n_clicks):
     )
 
 
+# Per-bump color palette (matches plugin for consistency)
+BUMP_COLORS = [
+    "#c8a44e", "#5aaa88", "#e06070", "#4db8c7", "#a668d8",
+    "#e0873e", "#7b8de0", "#50b560", "#d86890", "#dda04a",
+]
+
+
+def _get_bump_color(index: int) -> str:
+    return BUMP_COLORS[index % len(BUMP_COLORS)]
+
+
+def _sort_daily_by_bump_like_table(daily_by_bump: list, by_bump: list) -> list:
+    """Sort daily_by_bump to match by_bump order (by revenue)."""
+    if not daily_by_bump or not by_bump:
+        return daily_by_bump or []
+    order = {b.get("bump", {}).get("id"): i for i, b in enumerate(by_bump)}
+    return sorted(daily_by_bump, key=lambda x: order.get(x.get("bump", {}).get("id"), 999))
+
+
 # â”€â”€ Order Bump Analytics â”€â”€
 
 @callback(
@@ -1790,6 +1809,8 @@ def render_ob_analytics(pathname, _refresh):
     summary = ob_api.analytics_summary()
     by_bump = ob_api.analytics_by_bump()
     daily = ob_api.analytics_daily()
+    daily_by_bump = ob_api.analytics_daily_by_bump()
+    daily_by_bump = _sort_daily_by_bump_like_table(daily_by_bump, by_bump)
 
     def _mini_kpi(title, value, subtitle, color=COLORS["accent"]):
         return html.Div(style={
@@ -1826,6 +1847,13 @@ def render_ob_analytics(pathname, _refresh):
         _mini_kpi("Avg per Offer", f"${avg_val:,.2f}", "Average revenue per accepted offer", COLORS["accent4"]),
     ]
 
+    bump_colors = {}
+    if daily_by_bump:
+        for i, item in enumerate(daily_by_bump):
+            bid = item.get("bump", {}).get("id")
+            if bid is not None:
+                bump_colors[bid] = _get_bump_color(i)
+
     if by_bump:
         bump_header = html.Tr([
             html.Th("Offer Name", style=_th_style()),
@@ -1838,17 +1866,33 @@ def render_ob_analytics(pathname, _refresh):
         bump_rows = []
         for b in by_bump:
             bump_info = b.get("bump", {})
-            bump_rows.append(html.Tr([
-                html.Td(str(bump_info.get("title", "")), style=_td_style({"fontWeight": "600"})),
-                html.Td(
-                    _resolve_product_name(bump_info.get("bump_product_id", 0)),
-                    style=_td_style({"color": COLORS["text_muted"], "fontSize": "12px"}),
-                ),
-                html.Td(f"{b.get('impressions', 0):,}", style=_td_style({"textAlign": "right"})),
-                html.Td(f"{b.get('conversions', 0):,}", style=_td_style({"textAlign": "right"})),
-                html.Td(f"{b.get('conversion_rate', 0)}%", style=_td_style({"textAlign": "right"})),
-                html.Td(f"${b.get('total_revenue', 0):,.2f}", style=_td_style({"textAlign": "right"})),
-            ]))
+            bid = bump_info.get("id")
+            color = bump_colors.get(bid, _get_bump_color(len(bump_rows)))
+            indicator = html.Span(
+                style={
+                    "display": "inline-block", "width": "10px", "height": "10px",
+                    "marginRight": "8px", "borderRadius": "2px", "verticalAlign": "middle",
+                    "backgroundColor": color,
+                },
+            )
+            first_cell_style = _td_style({"fontWeight": "600"})
+            bump_rows.append(html.Tr(
+                [
+                    html.Td(
+                        [indicator, str(bump_info.get("title", ""))],
+                        style=first_cell_style,
+                    ),
+                    html.Td(
+                        _resolve_product_name(bump_info.get("bump_product_id", 0)),
+                        style=_td_style({"color": COLORS["text_muted"], "fontSize": "12px"}),
+                    ),
+                    html.Td(f"{b.get('impressions', 0):,}", style=_td_style({"textAlign": "right"})),
+                    html.Td(f"{b.get('conversions', 0):,}", style=_td_style({"textAlign": "right"})),
+                    html.Td(f"{b.get('conversion_rate', 0)}%", style=_td_style({"textAlign": "right"})),
+                    html.Td(f"${b.get('total_revenue', 0):,.2f}", style=_td_style({"textAlign": "right"})),
+                ],
+                style={"borderLeft": f"4px solid {color}"},
+            ))
         bump_table = html.Table(
             [html.Thead(bump_header), html.Tbody(bump_rows)],
             style={"width": "100%", "borderCollapse": "collapse"},
@@ -1862,27 +1906,55 @@ def render_ob_analytics(pathname, _refresh):
     fig = go.Figure()
     if daily:
         dates = [d["date"] for d in daily]
-        fig.add_trace(go.Bar(
-            x=dates, y=[d["impressions"] for d in daily],
-            name="Times Shown",
-            marker_color=COLORS["accent2"], opacity=0.7,
-        ))
-        fig.add_trace(go.Bar(
-            x=dates, y=[d["conversions"] for d in daily],
-            name="Times Accepted",
-            marker_color=COLORS["accent3"], opacity=0.9,
-        ))
-        fig.add_trace(go.Scatter(
-            x=dates, y=[d["revenue"] for d in daily],
-            name="Extra Revenue ($)", yaxis="y2",
-            line=dict(color=COLORS["accent"], width=2),
-            mode="lines+markers", marker=dict(size=4),
-        ))
+        if daily_by_bump:
+            for i, item in enumerate(daily_by_bump):
+                title = (item.get("bump", {}) or {}).get("title") or f"Offer {i + 1}"
+                color = _get_bump_color(i)
+                day_data = item.get("daily") or []
+                day_map = {d["date"]: d for d in day_data}
+                imps = [day_map.get(d, {}).get("impressions", 0) for d in dates]
+                convs = [day_map.get(d, {}).get("conversions", 0) for d in dates]
+                fig.add_trace(go.Bar(
+                    x=dates, y=imps,
+                    name=f"{title} – Shown",
+                    marker_color=color, opacity=0.8,
+                ))
+                fig.add_trace(go.Bar(
+                    x=dates, y=convs,
+                    name=f"{title} – Accepted",
+                    marker_color=color, opacity=0.5,
+                    marker_pattern=dict(shape="/", solidity=0.3),
+                ))
+            revs = [d["revenue"] for d in daily]
+            fig.add_trace(go.Scatter(
+                x=dates, y=revs,
+                name="Extra Revenue ($)", yaxis="y2",
+                line=dict(color=COLORS["accent"], width=2),
+                mode="lines+markers", marker=dict(size=4),
+            ))
+        else:
+            fig.add_trace(go.Bar(
+                x=dates, y=[d["impressions"] for d in daily],
+                name="Times Shown",
+                marker_color=COLORS["accent2"], opacity=0.7,
+            ))
+            fig.add_trace(go.Bar(
+                x=dates, y=[d["conversions"] for d in daily],
+                name="Times Accepted",
+                marker_color=COLORS["accent3"], opacity=0.9,
+            ))
+            fig.add_trace(go.Scatter(
+                x=dates, y=[d["revenue"] for d in daily],
+                name="Extra Revenue ($)", yaxis="y2",
+                line=dict(color=COLORS["accent"], width=2),
+                mode="lines+markers", marker=dict(size=4),
+            ))
     layout_overrides = {k: v for k, v in PLOT_LAYOUT.items() if k not in ("yaxis",)}
+    barmode = "group" if daily_by_bump else "overlay"
     fig.update_layout(
         **layout_overrides,
         height=300,
-        barmode="overlay",
+        barmode=barmode,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         yaxis=dict(gridcolor=COLORS["grid"], showline=False, zeroline=False, rangemode="tozero", title=None),
         yaxis2=dict(

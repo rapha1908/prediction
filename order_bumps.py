@@ -250,6 +250,30 @@ def analytics_daily(bump_id: int | None = None,
     return []
 
 
+def analytics_daily_by_bump(date_from: str | None = None,
+                           date_to: str | None = None) -> list[dict]:
+    """Get daily stats broken down by bump (for per-bump charts with distinct colors)."""
+    auth = _auth()
+    if not auth:
+        return []
+    params = {}
+    if date_from:
+        params["date_from"] = date_from
+    if date_to:
+        params["date_to"] = date_to
+    try:
+        resp = requests.get(
+            f"{_BASE_URL}/analytics/daily-by-bump",
+            auth=auth, headers=_headers(), params=params,
+            timeout=_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception as e:
+        print(f"[OrderBumps] analytics_daily_by_bump error: {e}")
+    return []
+
+
 # ── Health Check ─────────────────────────────────────────────
 
 def health() -> dict:

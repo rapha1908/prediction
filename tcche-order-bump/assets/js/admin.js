@@ -147,6 +147,26 @@
     var dailyChart = null;
     var revenueChart = null;
 
+    var BUMP_COLORS = [
+        '#2271b1', '#00a32a', '#d63638', '#dba617', '#7c3aed',
+        '#0891b2', '#ea580c', '#be185d', '#059669', '#4f46e5'
+    ];
+
+    function getBumpColor(index) {
+        return BUMP_COLORS[index % BUMP_COLORS.length];
+    }
+
+    function sortDailyByBumpLikeTable(dailyByBump, byBump) {
+        if (!dailyByBump || !byBump || !byBump.length) return dailyByBump || [];
+        var order = {};
+        byBump.forEach(function (row, i) { order[row.bump.id] = i; });
+        return dailyByBump.slice().sort(function (a, b) {
+            var ia = order[a.bump.id] !== undefined ? order[a.bump.id] : 999;
+            var ib = order[b.bump.id] !== undefined ? order[b.bump.id] : 999;
+            return ia - ib;
+        });
+    }
+
     function loadAnalytics() {
         var dateFrom = $('#tcche-ob-date-from').val();
         var dateTo = $('#tcche-ob-date-to').val();
@@ -169,9 +189,10 @@
                 $('#stat-revenue').text(formatCurrency(d.summary.total_revenue));
                 $('#stat-aov').text(formatCurrency(d.summary.avg_order_value));
 
-                renderDailyChart(d.daily);
-                renderRevenueChart(d.daily);
-                renderBumpTable(d.by_bump);
+                var dailyByBump = sortDailyByBumpLikeTable(d.daily_by_bump, d.by_bump);
+                renderDailyChart(d.daily, dailyByBump);
+                renderRevenueChart(d.daily, dailyByBump);
+                renderBumpTable(d.by_bump, dailyByBump);
             }
         });
     }
@@ -180,24 +201,50 @@
         return '$' + parseFloat(val).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
     }
 
-    function renderDailyChart(daily) {
+    function renderDailyChart(daily, dailyByBump) {
         var ctx = document.getElementById('tcche-ob-daily-chart');
         if (!ctx) return;
 
         var labels = daily.map(function (r) { return r.date; });
-        var imps = daily.map(function (r) { return r.impressions; });
-        var convs = daily.map(function (r) { return r.conversions; });
+        var datasets = [];
+
+        if (dailyByBump && dailyByBump.length) {
+            dailyByBump.forEach(function (item, i) {
+                var color = getBumpColor(i);
+                var title = item.bump && item.bump.title ? item.bump.title : ('Bump ' + (i + 1));
+                var imps = (item.daily || []).map(function (r) { return r.impressions; });
+                var convs = (item.daily || []).map(function (r) { return r.conversions; });
+                datasets.push({
+                    label: title + ' – Impressions',
+                    data: imps,
+                    borderColor: color,
+                    backgroundColor: (color.indexOf('#') === 0 ? color + '1a' : color),
+                    fill: true,
+                    tension: 0.3,
+                });
+                datasets.push({
+                    label: title + ' – Conversions',
+                    data: convs,
+                    borderColor: color,
+                    borderDash: [4, 4],
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0.3,
+                });
+            });
+        } else {
+            var imps = daily.map(function (r) { return r.impressions; });
+            var convs = daily.map(function (r) { return r.conversions; });
+            datasets = [
+                { label: 'Impressions', data: imps, borderColor: '#2271b1', backgroundColor: 'rgba(34,113,177,0.08)', fill: true, tension: 0.3 },
+                { label: 'Conversions', data: convs, borderColor: '#00a32a', backgroundColor: 'rgba(0,163,42,0.08)', fill: true, tension: 0.3 },
+            ];
+        }
 
         if (dailyChart) dailyChart.destroy();
         dailyChart = new Chart(ctx, {
             type: 'line',
-            data: {
-                labels: labels,
-                datasets: [
-                    { label: 'Impressions', data: imps, borderColor: '#2271b1', backgroundColor: 'rgba(34,113,177,0.08)', fill: true, tension: 0.3 },
-                    { label: 'Conversions', data: convs, borderColor: '#00a32a', backgroundColor: 'rgba(0,163,42,0.08)', fill: true, tension: 0.3 },
-                ]
-            },
+            data: { labels: labels, datasets: datasets },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
@@ -210,22 +257,37 @@
         });
     }
 
-    function renderRevenueChart(daily) {
+    function renderRevenueChart(daily, dailyByBump) {
         var ctx = document.getElementById('tcche-ob-revenue-chart');
         if (!ctx) return;
 
         var labels = daily.map(function (r) { return r.date; });
-        var revs = daily.map(function (r) { return parseFloat(r.revenue); });
+        var datasets = [];
+
+        if (dailyByBump && dailyByBump.length) {
+            dailyByBump.forEach(function (item, i) {
+                var color = getBumpColor(i);
+                var title = item.bump && item.bump.title ? item.bump.title : ('Bump ' + (i + 1));
+                var revs = (item.daily || []).map(function (r) { return parseFloat(r.revenue); });
+                datasets.push({
+                    label: title,
+                    data: revs,
+                    backgroundColor: (color.indexOf('#') === 0 ? color + '99' : color),
+                    borderColor: color,
+                    borderWidth: 1,
+                });
+            });
+        } else {
+            var revs = daily.map(function (r) { return parseFloat(r.revenue); });
+            datasets = [
+                { label: 'Revenue', data: revs, backgroundColor: 'rgba(34,113,177,0.6)', borderColor: '#2271b1', borderWidth: 1 },
+            ];
+        }
 
         if (revenueChart) revenueChart.destroy();
         revenueChart = new Chart(ctx, {
             type: 'bar',
-            data: {
-                labels: labels,
-                datasets: [
-                    { label: 'Revenue', data: revs, backgroundColor: 'rgba(34,113,177,0.6)', borderColor: '#2271b1', borderWidth: 1 },
-                ]
-            },
+            data: { labels: labels, datasets: datasets },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
@@ -238,10 +300,17 @@
         });
     }
 
-    function renderBumpTable(byBump) {
+    function renderBumpTable(byBump, dailyByBump) {
         var $body = $('#tcche-ob-bump-table-body');
         if (!$body.length) return;
         $body.empty();
+
+        var bumpColors = {};
+        if (dailyByBump && dailyByBump.length) {
+            dailyByBump.forEach(function (item, i) {
+                if (item.bump && item.bump.id) bumpColors[item.bump.id] = getBumpColor(i);
+            });
+        }
 
         if (!byBump.length) {
             $body.html('<tr><td colspan="6" style="text-align:center;padding:20px;">No data available.</td></tr>');
@@ -249,9 +318,11 @@
         }
 
         $.each(byBump, function (i, row) {
+            var color = bumpColors[row.bump.id] || getBumpColor(i);
+            var indicator = '<span class="tcche-ob-bump-color-indicator" style="display:inline-block;width:12px;height:12px;margin-right:8px;border-radius:2px;vertical-align:middle;background:' + color + ';"></span>';
             $body.append(
-                '<tr>' +
-                '<td>' + row.bump.title + '</td>' +
+                '<tr data-bump-id="' + (row.bump.id || '') + '" style="border-left:4px solid ' + color + ';">' +
+                '<td>' + indicator + row.bump.title + '</td>' +
                 '<td>' + row.bump.bump_product_name + '</td>' +
                 '<td>' + row.impressions.toLocaleString() + '</td>' +
                 '<td>' + row.conversions.toLocaleString() + '</td>' +

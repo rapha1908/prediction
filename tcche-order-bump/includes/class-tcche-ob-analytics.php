@@ -213,6 +213,87 @@ KEY created_at (created_at)
         return $days;
     }
 
+    /**
+     * Get daily stats broken down by bump (for per-bump charts with distinct colors).
+     *
+     * @param array $args date_from, date_to
+     * @return array Array of { bump, daily: [{ date, impressions, conversions, revenue }] }
+     */
+    public static function get_daily_stats_by_bump($args = []) {
+        global $wpdb;
+
+        $defaults = [
+            'date_from' => gmdate('Y-m-d', strtotime('-30 days')),
+            'date_to'   => gmdate('Y-m-d'),
+        ];
+        $args = wp_parse_args($args, $defaults);
+
+        $imp_table  = $wpdb->prefix . 'tcche_ob_impressions';
+        $conv_table = $wpdb->prefix . 'tcche_ob_conversions';
+
+        $impressions_daily = $wpdb->get_results($wpdb->prepare(
+            "SELECT bump_id, DATE(created_at) as date, COUNT(*) as count
+             FROM {$imp_table}
+             WHERE created_at BETWEEN %s AND %s
+             GROUP BY bump_id, DATE(created_at)
+             ORDER BY bump_id, date ASC",
+            $args['date_from'] . ' 00:00:00',
+            $args['date_to'] . ' 23:59:59'
+        ), ARRAY_A);
+
+        $conversions_daily = $wpdb->get_results($wpdb->prepare(
+            "SELECT bump_id, DATE(created_at) as date, COUNT(*) as count, SUM(revenue) as revenue
+             FROM {$conv_table}
+             WHERE created_at BETWEEN %s AND %s
+             GROUP BY bump_id, DATE(created_at)
+             ORDER BY bump_id, date ASC",
+            $args['date_from'] . ' 00:00:00',
+            $args['date_to'] . ' 23:59:59'
+        ), ARRAY_A);
+
+        $imp_by_bump  = [];
+        foreach ($impressions_daily as $row) {
+            $bid = (int) $row['bump_id'];
+            if (!isset($imp_by_bump[$bid])) $imp_by_bump[$bid] = [];
+            $imp_by_bump[$bid][$row['date']] = (int) $row['count'];
+        }
+
+        $conv_by_bump = [];
+        $rev_by_bump  = [];
+        foreach ($conversions_daily as $row) {
+            $bid = (int) $row['bump_id'];
+            if (!isset($conv_by_bump[$bid])) { $conv_by_bump[$bid] = []; $rev_by_bump[$bid] = []; }
+            $conv_by_bump[$bid][$row['date']] = (int) $row['count'];
+            $rev_by_bump[$bid][$row['date']]  = (float) $row['revenue'];
+        }
+
+        $bumps = TCCHE_OB_Post_Type::get_bumps(['post_status' => 'any']);
+        $current = strtotime($args['date_from']);
+        $end     = strtotime($args['date_to']);
+        $all_dates = [];
+        while ($current <= $end) {
+            $all_dates[] = gmdate('Y-m-d', $current);
+            $current = strtotime('+1 day', $current);
+        }
+
+        $results = [];
+        foreach ($bumps as $bump) {
+            $bid = (int) $bump['id'];
+            $daily = [];
+            foreach ($all_dates as $d) {
+                $daily[] = [
+                    'date'        => $d,
+                    'impressions' => (int) ($imp_by_bump[$bid][$d] ?? 0),
+                    'conversions' => (int) ($conv_by_bump[$bid][$d] ?? 0),
+                    'revenue'     => (float) ($rev_by_bump[$bid][$d] ?? 0),
+                ];
+            }
+            $results[] = ['bump' => $bump, 'daily' => $daily];
+        }
+
+        return $results;
+    }
+
     public static function tables_exist() {
         global $wpdb;
         $imp  = $wpdb->get_var("SHOW TABLES LIKE '{$wpdb->prefix}tcche_ob_impressions'");

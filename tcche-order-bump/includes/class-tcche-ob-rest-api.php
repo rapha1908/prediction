@@ -76,6 +76,16 @@ class TCCHE_OB_REST_API {
             ],
         ]);
 
+        register_rest_route(self::NAMESPACE, '/analytics/daily-by-bump', [
+            'methods'             => WP_REST_Server::READABLE,
+            'callback'            => [__CLASS__, 'get_analytics_daily_by_bump'],
+            'permission_callback' => [__CLASS__, 'check_admin_permission'],
+            'args' => [
+                'date_from' => ['type' => 'string', 'default' => gmdate('Y-m-d', strtotime('-30 days'))],
+                'date_to'   => ['type' => 'string', 'default' => gmdate('Y-m-d')],
+            ],
+        ]);
+
         register_rest_route(self::NAMESPACE, '/health', [
             'methods'             => WP_REST_Server::READABLE,
             'callback'            => [__CLASS__, 'get_health'],
@@ -168,6 +178,14 @@ class TCCHE_OB_REST_API {
     public static function get_analytics_daily($request) {
         $stats = TCCHE_OB_Analytics::get_daily_stats([
             'bump_id'   => $request->get_param('bump_id'),
+            'date_from' => $request->get_param('date_from'),
+            'date_to'   => $request->get_param('date_to'),
+        ]);
+        return rest_ensure_response($stats);
+    }
+
+    public static function get_analytics_daily_by_bump($request) {
+        $stats = TCCHE_OB_Analytics::get_daily_stats_by_bump([
             'date_from' => $request->get_param('date_from'),
             'date_to'   => $request->get_param('date_to'),
         ]);

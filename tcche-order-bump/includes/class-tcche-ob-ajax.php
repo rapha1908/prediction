@@ -210,10 +210,16 @@ class TCCHE_OB_Ajax {
             'date_to'   => $date_to,
         ]);
 
+        $daily_by_bump = TCCHE_OB_Analytics::get_daily_stats_by_bump([
+            'date_from' => $date_from,
+            'date_to'   => $date_to,
+        ]);
+
         wp_send_json_success([
-            'summary' => $summary,
-            'daily'   => $daily,
-            'by_bump' => $by_bump,
+            'summary'       => $summary,
+            'daily'         => $daily,
+            'by_bump'       => $by_bump,
+            'daily_by_bump' => $daily_by_bump,
         ]);
     }
 }
