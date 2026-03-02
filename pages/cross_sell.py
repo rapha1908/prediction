@@ -1005,10 +1005,16 @@ def render_order_bump_section(pathname, refresh_clicks, selected_cats, product_i
         bump_rows = []
         for b in existing[:20]:
             status_color = COLORS["accent3"] if b.get("status") == "publish" else COLORS["text_muted"]
+            desc = (b.get("description") or "")[:80]
+            if len((b.get("description") or "")) > 80:
+                desc += "..."
             bump_rows.append(html.Tr([
                 html.Td(str(b.get("id", "")), style=_td_style({"width": "50px", "color": COLORS["text_muted"]})),
-                html.Td(str(b.get("title", "")), style=_td_style({"fontWeight": "600"})),
-                html.Td(str(b.get("headline", "")), style=_td_style()),
+                html.Td(_format_when_in_cart(b), style=_td_style({"maxWidth": "180px", "fontSize": "12px"})),
+                html.Td(b.get("bump_product_name") or _resolve_product_name(b.get("bump_product_id", 0)),
+                       style=_td_style({"fontWeight": "600", "maxWidth": "200px"})),
+                html.Td(str(b.get("headline", "")), style=_td_style({"maxWidth": "200px", "fontSize": "12px"})),
+                html.Td(desc, style=_td_style({"maxWidth": "220px", "fontSize": "11px", "color": COLORS["text_muted"]})),
                 html.Td(
                     html.Span(b.get("status", ""), style={
                         "color": status_color, "fontWeight": "600", "fontSize": "11px",
@@ -1023,24 +1029,34 @@ def render_order_bump_section(pathname, refresh_clicks, selected_cats, product_i
                 ),
                 html.Td(b.get("design_style", ""), style=_td_style({"color": COLORS["text_muted"]})),
                 html.Td(
-                    html.Button("Delete", id={"type": "ob-delete-btn", "index": b["id"]}, n_clicks=0, style={
-                        "backgroundColor": "transparent", "color": COLORS["red"],
-                        "border": f"1px solid {COLORS['red']}", "borderRadius": "4px",
-                        "padding": "3px 10px", "fontSize": "10px", "fontWeight": "600",
-                        "cursor": "pointer", "fontFamily": FONT,
-                    }),
+                    html.Div(style={"display": "flex", "gap": "6px", "flexWrap": "wrap"}, children=[
+                        html.Button("Edit", id={"type": "ob-edit-btn", "index": b["id"]}, n_clicks=0, style={
+                            "backgroundColor": "transparent", "color": COLORS["accent"],
+                            "border": f"1px solid {COLORS['accent']}", "borderRadius": "4px",
+                            "padding": "3px 10px", "fontSize": "10px", "fontWeight": "600",
+                            "cursor": "pointer", "fontFamily": FONT,
+                        }),
+                        html.Button("Delete", id={"type": "ob-delete-btn", "index": b["id"]}, n_clicks=0, style={
+                            "backgroundColor": "transparent", "color": COLORS["red"],
+                            "border": f"1px solid {COLORS['red']}", "borderRadius": "4px",
+                            "padding": "3px 10px", "fontSize": "10px", "fontWeight": "600",
+                            "cursor": "pointer", "fontFamily": FONT,
+                        }),
+                    ]),
                     style=_td_style(),
                 ),
             ]))
 
         bump_header = html.Tr([
             html.Th("ID", style=_th_style({"width": "50px"})),
-            html.Th("Offer Name", style=_th_style()),
-            html.Th("Customer Headline", style=_th_style()),
+            html.Th("When in Cart", style=_th_style()),
+            html.Th("Product Displayed", style=_th_style()),
+            html.Th("Headline", style=_th_style()),
+            html.Th("Description", style=_th_style()),
             html.Th("Status", style=_th_style()),
             html.Th("Discount", style=_th_style({"textAlign": "right"})),
             html.Th("Style", style=_th_style()),
-            html.Th("", style=_th_style({"width": "80px"})),
+            html.Th("", style=_th_style({"width": "120px"})),
         ])
 
         existing_section = html.Div([
@@ -1149,6 +1165,30 @@ def _resolve_product_name(pid: int) -> str:
     if not subset.empty:
         return str(subset.iloc[0]["product_name"])
     return f"Product #{pid}"
+
+
+def _format_when_in_cart(bump: dict) -> str:
+    """Format 'When in Cart' from trigger_product_ids and trigger_category_ids."""
+    parts = []
+    trigger_pids = bump.get("trigger_product_ids") or []
+    trigger_cat_ids = bump.get("trigger_category_ids") or []
+
+    if trigger_pids:
+        names = [_resolve_product_name(pid)[:35] for pid in trigger_pids[:3]]
+        if len(trigger_pids) > 3:
+            names.append(f"+{len(trigger_pids) - 3}")
+        parts.append(", ".join(names))
+    if trigger_cat_ids:
+        wc_cats = _get_wc_categories_cached()
+        cat_names = [next((c["name"] for c in wc_cats if c["id"] == cid), f"Cat #{cid}") for cid in trigger_cat_ids[:2]]
+        if trigger_cat_ids and not parts:
+            parts.append("Category: " + ", ".join(cat_names))
+        elif trigger_cat_ids:
+            parts.append("Cat: " + ", ".join(cat_names))
+
+    if not parts:
+        return "Everyone"
+    return " | ".join(parts)
 
 
 def _get_wc_categories_cached() -> list[dict]:
@@ -1345,6 +1385,77 @@ def handle_regenerate(n_clicks, store, preview_url):
 
 # â”€â”€ Cancel preview â”€â”€
 
+# Edit bump -> open preview panel
+
+@callback(
+    Output("ob-preview-panel", "style", allow_duplicate=True),
+    Output("ob-preview-store", "data", allow_duplicate=True),
+    Output("ob-preview-title", "value", allow_duplicate=True),
+    Output("ob-preview-headline", "value", allow_duplicate=True),
+    Output("ob-preview-description", "value", allow_duplicate=True),
+    Output("ob-preview-url-input", "value", allow_duplicate=True),
+    Output("ob-preview-design-style", "value", allow_duplicate=True),
+    Input({"type": "ob-edit-btn", "index": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def handle_edit_bump(n_clicks_list):
+    """When Edit is clicked, load bump data and show preview panel."""
+    if not ctx.triggered_id or not any(n_clicks_list):
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+
+    btn_id = ctx.triggered_id
+    if not isinstance(btn_id, dict):
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+
+    bump_id = btn_id.get("index")
+    try:
+        bump_id = int(bump_id)
+    except (ValueError, TypeError):
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+
+    bump = ob_api.get_bump(bump_id)
+    if not bump:
+        return no_update, no_update, no_update, no_update, no_update, no_update, no_update
+
+    trigger_pids = bump.get("trigger_product_ids") or []
+    trigger_cat_ids = bump.get("trigger_category_ids") or []
+
+    if trigger_pids:
+        trigger_mode = "products"
+        trigger_cat_id = None
+    elif trigger_cat_ids:
+        trigger_mode = "category"
+        trigger_cat_id = int(trigger_cat_ids[0])
+        trigger_pids = []
+    else:
+        trigger_mode = "none"
+        trigger_cat_id = None
+        trigger_pids = []
+
+    wc_cats = _get_wc_categories_cached()
+    trigger_cat_name = next((c["name"] for c in wc_cats if c["id"] == trigger_cat_id), None) if trigger_cat_id else None
+
+    store = {
+        "edit_bump_id": bump_id,
+        "bump_pid": bump.get("bump_product_id"),
+        "bump_name": bump.get("bump_product_name") or _resolve_product_name(bump.get("bump_product_id", 0)),
+        "trigger_pids": trigger_pids,
+        "trigger_cat_id": trigger_cat_id,
+        "trigger_mode": trigger_mode,
+        "trigger_name": None,
+        "trigger_cat_name": trigger_cat_name,
+    }
+
+    return (
+        {"display": "block"},
+        store,
+        bump.get("title") or bump.get("bump_product_name") or "",
+        bump.get("headline") or "",
+        bump.get("description") or "",
+        "",
+        bump.get("design_style") or "classic",
+    )
+
 @callback(
     Output("ob-preview-panel", "style", allow_duplicate=True),
     Output("ob-confirm-result", "children", allow_duplicate=True),
@@ -1371,7 +1482,7 @@ def handle_cancel_preview(n_clicks):
     prevent_initial_call=True,
 )
 def handle_confirm_create(n_clicks, store, title, headline, description, design_style):
-    """Actually create the bump with user-edited copy."""
+    """Create or update the bump with user-edited copy."""
     if not n_clicks or not store:
         return no_update, no_update
 
@@ -1384,12 +1495,7 @@ def handle_confirm_create(n_clicks, store, title, headline, description, design_
         "bump_product_id": int(bump_pid),
         "headline": headline or "Don't miss this!",
         "description": description or "",
-        "discount_type": "none",
-        "discount_value": 0,
-        "position": "after_order_review",
         "design_style": design_style or "classic",
-        "priority": 10,
-        "status": "publish",
     }
 
     mode = store.get("trigger_mode", "none")
@@ -1402,7 +1508,18 @@ def handle_confirm_create(n_clicks, store, title, headline, description, design_
         if cat_id:
             payload["trigger_category_ids"] = [int(cat_id)]
 
-    result = ob_api.create_bump(payload)
+    edit_id = store.get("edit_bump_id")
+    if edit_id:
+        result = ob_api.update_bump(int(edit_id), payload)
+    else:
+        payload.update({
+            "discount_type": "none",
+            "discount_value": 0,
+            "position": "after_order_review",
+            "priority": 10,
+            "status": "publish",
+        })
+        result = ob_api.create_bump(payload)
     _lazy_cache.pop("ob_bumps", None)
 
     if result and result.get("id"):
@@ -1414,8 +1531,9 @@ def handle_confirm_create(n_clicks, store, title, headline, description, design_
             trigger_info = f" (shows for category '{store.get('trigger_cat_name', '')}')"
         else:
             trigger_info = " (shows to everyone)"
+        action = "updated" if edit_id else "created"
         msg = html.Div(
-            f"Offer #{result['id']} created for '{bump_name}'{trigger_info}. Click 'Refresh' to update.",
+            f"Offer #{result['id']} {action} for '{bump_name}'{trigger_info}. Click 'Refresh' to update.",
             style={
                 "color": COLORS["accent3"], "fontSize": "13px", "padding": "10px 16px",
                 "background": "rgba(90,170,136,0.10)", "borderRadius": "8px",
