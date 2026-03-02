@@ -110,7 +110,7 @@ class TCCHE_OB_Ajax {
             'trigger_category_ids'=> array_map('absint', (array) ($_POST['trigger_category_ids'] ?? [])),
             'discount_type'       => sanitize_text_field($_POST['discount_type'] ?? 'none'),
             'discount_value'      => floatval($_POST['discount_value'] ?? 0),
-            'headline'            => sanitize_text_field($_POST['headline'] ?? ''),
+            'headline'            => sanitize_textarea_field($_POST['headline'] ?? ''),
             'description'         => wp_kses_post($_POST['description'] ?? ''),
             'position'            => sanitize_text_field($_POST['position'] ?? 'after_order_review'),
             'design_style'        => sanitize_text_field($_POST['design_style'] ?? 'classic'),

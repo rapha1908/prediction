@@ -442,14 +442,15 @@ def layout():
                                 }),
                             ]),
                             html.Div(style={"flex": "1", "minWidth": "200px"}, children=[
-                                html.Label("Headline (customers see this at checkout):", style={
+                                html.Label("Headline (customers see this at checkout — use line breaks for multi-line):", style={
                                     "fontSize": "12px", "color": COLORS["text_muted"], "marginBottom": "4px", "display": "block",
                                 }),
-                                dcc.Input(id="ob-preview-headline", type="text", value="", style={
-                                    "width": "100%", "backgroundColor": COLORS["card"],
+                                dcc.Textarea(id="ob-preview-headline", value="", style={
+                                    "width": "100%", "minHeight": "50px",
+                                    "backgroundColor": COLORS["card"],
                                     "color": COLORS["text"], "border": f"1px solid {COLORS['card_border']}",
                                     "borderRadius": "6px", "padding": "8px 12px", "fontSize": "13px",
-                                    "fontFamily": FONT,
+                                    "fontFamily": FONT, "resize": "vertical",
                                 }),
                             ]),
                             html.Div(style={"flex": "1", "minWidth": "160px"}, children=[
@@ -471,11 +472,11 @@ def layout():
                             ]),
                         ]),
                         html.Div(style={"marginBottom": "14px"}, children=[
-                            html.Label("Description (shown below headline, supports <b>bold</b> HTML):", style={
+                            html.Label("Description (below headline; supports <b>bold</b> HTML; line breaks preserved on checkout):", style={
                                 "fontSize": "12px", "color": COLORS["text_muted"], "marginBottom": "4px", "display": "block",
                             }),
                             dcc.Textarea(id="ob-preview-description", value="", style={
-                                "width": "100%", "minHeight": "60px",
+                                "width": "100%", "minHeight": "100px",
                                 "backgroundColor": COLORS["card"],
                                 "color": COLORS["text"], "border": f"1px solid {COLORS['card_border']}",
                                 "borderRadius": "6px", "padding": "8px 12px", "fontSize": "13px",

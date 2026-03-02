@@ -109,6 +109,10 @@ class TCCHE_OB_Post_Type {
                 $value = absint($value);
             } elseif ($field === 'discount_value') {
                 $value = floatval($value);
+            } elseif ($field === 'headline') {
+                $value = sanitize_textarea_field($value);
+            } elseif ($field === 'description') {
+                $value = wp_kses_post($value);
             } else {
                 $value = sanitize_text_field($value);
             }
